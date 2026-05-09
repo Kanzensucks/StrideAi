@@ -249,7 +249,7 @@ Return JSON matching this exact structure:
 
     response = client.messages.create(
         model=MODEL_OPUS,
-        max_tokens=8000,
+        max_tokens=32000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
