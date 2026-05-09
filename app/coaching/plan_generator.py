@@ -247,14 +247,15 @@ Return JSON matching this exact structure:
 
     logger.info(f"Generating plan for user (Opus, {total_weeks} weeks)")
 
-    response = client.messages.create(
+    with client.messages.stream(
         model=MODEL_OPUS,
         max_tokens=32000,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
-    )
+    ) as stream:
+        raw = stream.get_final_text()
 
-    raw = response.content[0].text.strip()
+    raw = raw.strip()
 
     # Strip any accidental markdown fences
     if raw.startswith("```"):
