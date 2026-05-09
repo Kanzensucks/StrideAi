@@ -150,9 +150,9 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
     if step >= 12:
         return False
 
-    # Step 3 is auto-advance (Strava early) — if we're here, resend and advance
+    # Step 3 = Strava connect — waiting for user to press Continue
     if step == 3:
-        _send_strava_early(chat_id)
+        # Any input (button tap or text) means the user is ready to continue
         state["step"] = 4
         user_store.save_onboarding_state(chat_id, state)
         _send_question(chat_id, 4)
@@ -247,11 +247,8 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
     user_store.save_onboarding_state(chat_id, state)
 
     if step == 3:
-        # Auto-advance: send Strava link then immediately send step 4 question
+        # Show Strava link with Continue button — stay on step 3 until user taps it
         _send_strava_early(chat_id)
-        state["step"] = 4
-        user_store.save_onboarding_state(chat_id, state)
-        _send_question(chat_id, 4)
 
     elif step == 9:
         # Goal prediction — build from collected data
@@ -283,9 +280,6 @@ def resume_onboarding(chat_id: str) -> None:
 
     if step == 3:
         _send_strava_early(chat_id)
-        state["step"] = 4
-        user_store.save_onboarding_state(chat_id, state)
-        _send_question(chat_id, 4)
     elif step == 9:
         _send_goal_prediction(chat_id, data)
     elif step >= 12:
@@ -323,14 +317,15 @@ def _send_question(chat_id: str, step: int) -> None:
 
 
 def _send_strava_early(chat_id: str) -> None:
-    """Send Strava OAuth link early — user continues with questions immediately."""
+    """Send Strava OAuth link with a Continue button — user taps link then presses Continue."""
     oauth_url = f"https://{PUBLIC_DOMAIN}/strava/connect?chat_id={chat_id}"
     msg = (
         "📲 Quick side step — connect Strava so I can auto-analyse your runs:\n\n"
         f"{oauth_url}\n\n"
-        "Tap the link and come straight back. Your answers are saving automatically."
+        "Tap the link to connect, then press Continue below to keep going."
     )
-    telegram_client.send_message(chat_id, msg)
+    keyboard = [[{"text": "Continue →", "callback_data": "strava_continue"}]]
+    telegram_client.send_message_with_keyboard(chat_id, msg, keyboard)
 
 
 def _send_goal_prediction(chat_id: str, data: dict) -> None:
