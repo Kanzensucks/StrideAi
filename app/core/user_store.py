@@ -143,6 +143,7 @@ def get_current_week_plan(chat_id: str) -> dict | None:
         return None
 
     today = datetime.now().date()
+    first_week = None
     for week in plan["weeks"]:
         start = week.get("start_date")
         end = week.get("end_date")
@@ -150,11 +151,17 @@ def get_current_week_plan(chat_id: str) -> dict | None:
             try:
                 w_start = datetime.strptime(start, "%Y-%m-%d").date()
                 w_end = datetime.strptime(end, "%Y-%m-%d").date()
+                if first_week is None:
+                    first_week = week
                 if w_start <= today <= w_end:
                     return week
+                # If today is before the plan starts, return week 1
+                if today < w_start and first_week is not None:
+                    return first_week
             except ValueError:
                 continue
-    return None
+    # Fallback: return first week
+    return first_week
 
 
 def get_week_plan(chat_id: str, week_number: int) -> dict | None:
