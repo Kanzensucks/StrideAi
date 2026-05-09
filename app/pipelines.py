@@ -437,6 +437,24 @@ def generate_and_send_plan(chat_id: str) -> None:
 
     try:
         profile = user_store.get_profile(chat_id)
+
+        # Confirm Strava is live and show recent activity count
+        try:
+            from datetime import datetime, timedelta
+            recent = strava_client.get_activities(chat_id, per_page=5, max_pages=1)
+            if recent:
+                latest = recent[0]
+                units = profile.get("units", "km")
+                activity_line = strava_client.format_activity_line(latest, units)
+                telegram_client.send_message(
+                    chat_id,
+                    f"Strava connected. Last activity: {activity_line}\n\nGenerating your plan now..."
+                )
+            else:
+                telegram_client.send_message(chat_id, "Strava connected — no recent activities found yet, but your plan is on its way.")
+        except Exception:
+            pass
+
         plan = plan_generator.generate_plan(profile)
         user_store.save_plan(chat_id, plan)
 

@@ -344,31 +344,52 @@ def _finalise_onboarding(chat_id: str, data: dict) -> None:
 # ─── Parsers ──────────────────────────────────────────────────
 
 def _parse_race_name_and_date(text: str) -> dict | None:
-    """Parse 'Race Name, Date String' into {name, date (YYYY-MM-DD)}."""
+    """Parse race name + date from free-form text.
+
+    Handles many orderings:
+      - Gold Coast Marathon, July 5 2026
+      - July 5 2026, Gold Coast Marathon
+      - Nike Melbourne Marathon October 11 2026
+      - Gold Coast Marathon July 5 2026
+    """
     import re
 
-    parts = text.split(",", 1)
-    if len(parts) < 2:
-        parts = text.rsplit(" ", 2)
-        if len(parts) < 2:
-            return None
-        name = parts[0]
-        date_str = " ".join(parts[1:])
-    else:
-        name = parts[0].strip()
-        date_str = parts[1].strip()
+    # Date patterns to try extracting from anywhere in the string
+    date_patterns = [
+        r"(\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})",
+        r"((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})",
+        r"((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}\s+\d{4})",
+        r"(\d{4}-\d{2}-\d{2})",
+        r"(\d{1,2}/\d{1,2}/\d{4})",
+    ]
 
     formats = [
         "%B %d %Y", "%b %d %Y", "%d %B %Y", "%d %b %Y",
+        "%B %dst %Y", "%B %dnd %Y", "%B %drd %Y", "%B %dth %Y",
+        "%d %B, %Y", "%B %d, %Y", "%b %d, %Y",
         "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y",
-        "%B %d, %Y", "%b %d, %Y",
     ]
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(date_str.strip(), fmt)
-            return {"name": name.strip(), "date": dt.strftime("%Y-%m-%d")}
-        except ValueError:
-            continue
+
+    text = text.strip()
+
+    for pattern in date_patterns:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if m:
+            date_str = m.group(1).strip().rstrip(",")
+            # Clean ordinal suffixes
+            date_str_clean = re.sub(r"(\d+)(?:st|nd|rd|th)", r"\1", date_str)
+            for fmt in formats:
+                try:
+                    dt = datetime.strptime(date_str_clean.strip(), fmt)
+                    # Name is everything except the matched date
+                    name = text[:m.start()].strip().strip(",").strip()
+                    if not name:
+                        name = text[m.end():].strip().strip(",").strip()
+                    if not name:
+                        name = "Goal Race"
+                    return {"name": name, "date": dt.strftime("%Y-%m-%d")}
+                except ValueError:
+                    continue
 
     return None
 
