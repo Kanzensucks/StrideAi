@@ -63,8 +63,8 @@ STEPS = {
     3: {
         "question": (
             "What's your goal time?\n\n"
-            "Type it in h:mm:ss format (e.g. 4:00:00 for a marathon) "
-            "or just say \"finish\" if completion is the goal."
+            "Any format works — 3:30:00, 3h30m, \"3 hours 30 mins\", \"sub 3:30\"\n"
+            "Or just say \"finish\" if completion is the goal."
         ),
         "field": "goal_time",
         "type": "text",
