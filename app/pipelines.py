@@ -458,6 +458,12 @@ def generate_and_send_plan(chat_id: str) -> None:
         plan = plan_generator.generate_plan(profile)
         user_store.save_plan(chat_id, plan)
 
+        # Ensure paces are saved to profile
+        if not profile.get("paces"):
+            paces = plan_generator.calculate_paces(profile)
+            if paces:
+                user_store.update_profile(chat_id, {"paces": paces})
+
         weeks = plan.get("total_weeks", len(plan.get("weeks", [])))
         race_name = profile.get("race_name", "your race")
         race_date = profile.get("race_date", "TBD")

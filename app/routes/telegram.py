@@ -201,15 +201,24 @@ def _send_week_plan(chat_id: str, week: dict, label: str, units: str) -> None:
     end = week.get("end_date", "")
     target = week.get(f"target_volume_{units}") or week.get("target_volume_km", "")
 
-    header = f"{label}"
+    # Compact header
+    header_parts = [label]
     if start and end:
-        header += f" ({start} – {end})"
+        # Shorten dates: "May 12 – Jun 18"
+        try:
+            from datetime import datetime
+            s = datetime.strptime(start, "%Y-%m-%d").strftime("%b %d")
+            e = datetime.strptime(end, "%Y-%m-%d").strftime("%b %d")
+            header_parts.append(f"{s} – {e}")
+        except Exception:
+            pass
     if phase:
-        header += f" — {phase}"
+        header_parts.append(phase)
     if target:
-        header += f" | Target: {target}{units}"
+        header_parts.append(f"{target}{units}")
 
-    lines = [header, ""]
+    lines = [" · ".join(header_parts), ""]
+
     for s in week.get("sessions", []):
         day = s.get("day", "")
         stype = s.get("type", "rest").replace("_", " ").title()
@@ -217,13 +226,19 @@ def _send_week_plan(chat_id: str, week: dict, label: str, units: str) -> None:
         pace = s.get("pace", "")
         notes = s.get("notes", "")
 
+        if stype.lower() == "rest":
+            lines.append(f"{day} — Rest")
+            continue
+
         line = f"{day} — {stype}"
         if dist:
             line += f" {dist}{units}"
         if pace:
             line += f" @ {pace}"
+        # Notes inline in brackets, keep it short
         if notes:
-            line += f"\n    {notes}"
+            short_note = notes.split(".")[0]  # first sentence only
+            line += f" ({short_note})"
         lines.append(line)
 
     telegram_client.send_message(chat_id, "\n".join(lines))
