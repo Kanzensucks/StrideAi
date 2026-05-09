@@ -192,7 +192,7 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
             return True
 
     elif step == 3:
-        data["goal_time"] = answer
+        data["goal_time"] = _normalise_goal_time(answer)
 
     elif step == 4:
         if answer.isdigit() and 3 <= int(answer) <= 6:
@@ -440,6 +440,54 @@ def _parse_prs(text: str) -> dict:
             prs[key] = m.group(1)
 
     return prs
+
+
+def _normalise_goal_time(text: str) -> str:
+    """Convert any time format to h:mm:ss.
+
+    Handles:
+      3:30:00  → 3:30:00
+      3:30     → 3:30:00
+      3h30m    → 3:30:00
+      3 hours 30 mins → 3:30:00
+      3 hour 30  → 3:30:00
+      sub 3:30   → 3:30:00
+      finish     → finish
+    """
+    import re
+
+    t = text.strip().lower()
+
+    if t in ("finish", "just finish", "complete", "just complete"):
+        return "finish"
+
+    # Strip leading "sub" / "under"
+    t = re.sub(r"^(sub|under)\s*", "", t)
+
+    # Already h:mm:ss
+    m = re.match(r"^(\d+):(\d{2}):(\d{2})$", t)
+    if m:
+        return f"{int(m.group(1))}:{m.group(2)}:{m.group(3)}"
+
+    # h:mm
+    m = re.match(r"^(\d+):(\d{2})$", t)
+    if m:
+        return f"{int(m.group(1))}:{m.group(2)}:00"
+
+    # Natural language: "3h 30m", "3h30", "3 hours 30 minutes", "3 hour 29 mins"
+    hours = re.search(r"(\d+)\s*h(?:our|ours|r)?", t)
+    mins = re.search(r"(\d+)\s*m(?:in|ins|inute|inutes)?", t)
+    secs = re.search(r"(\d+)\s*s(?:ec|ecs|econd|econds)?", t)
+
+    h = int(hours.group(1)) if hours else 0
+    mi = int(mins.group(1)) if mins else 0
+    s = int(secs.group(1)) if secs else 0
+
+    if h or mi or s:
+        return f"{h}:{mi:02d}:{s:02d}"
+
+    # Last resort: return as-is
+    return text.strip()
 
 
 def _parse_cross_training(text: str) -> list:
