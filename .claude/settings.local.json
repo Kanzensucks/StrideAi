@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)",
+      "Bash(findstr /R \"^\\\\.env\")",
+      "Bash(git check-ignore *)"
+    ]
+  }
+}
