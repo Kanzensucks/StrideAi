@@ -94,6 +94,11 @@ def _handle_message(chat_id: str, text: str, from_user: dict, msg_timestamp) -> 
             return
         user_store.create_user(chat_id)
 
+    # Silently save Telegram first name if not already stored
+    first_name = from_user.get("first_name", "")
+    if first_name and not user_store.get_profile(chat_id).get("first_name"):
+        user_store.update_profile(chat_id, {"first_name": first_name})
+
     # Commands always take priority — even during onboarding
     if text.startswith("/"):
         _handle_command(chat_id, text, from_user)
@@ -179,12 +184,15 @@ def _handle_plan_command(chat_id: str, parts: list) -> None:
         week_num = (current.get("week", 1) + 1) if current else 2
         week = user_store.get_week_plan(chat_id, week_num)
         label = f"Week {week_num}"
+    elif len(parts) == 2 and parts[1].lower() == "all":
+        _send_all_weeks_plan(chat_id, plan, units)
+        return
     elif len(parts) == 3 and parts[1].lower() == "week" and parts[2].isdigit():
         week_num = int(parts[2])
         week = user_store.get_week_plan(chat_id, week_num)
         label = f"Week {week_num}"
     else:
-        telegram_client.send_message(chat_id, "Usage: /plan | /plan next | /plan week 5")
+        telegram_client.send_message(chat_id, "Usage: /plan | /plan next | /plan all | /plan week 5")
         return
 
     if not week:
@@ -244,12 +252,89 @@ def _send_week_plan(chat_id: str, week: dict, label: str, units: str) -> None:
     telegram_client.send_message(chat_id, "\n".join(lines))
 
 
+def _send_all_weeks_plan(chat_id: str, plan: dict, units: str) -> None:
+    """Send a compact one-line-per-week overview of the full plan."""
+    from datetime import datetime
+
+    weeks = plan.get("weeks", [])
+    if not weeks:
+        telegram_client.send_message(chat_id, "No plan found.")
+        return
+
+    total = len(weeks)
+    profile = user_store.get_profile(chat_id)
+    race_name = profile.get("race_name", "Race")
+    race_date = profile.get("race_date", "")
+
+    lines = [f"Full plan — {total} weeks to {race_name}", ""]
+
+    current_phase = None
+    for w in weeks:
+        num = w.get("week", "")
+        phase = w.get("phase", "").title()
+        start = w.get("start_date", "")
+        end = w.get("end_date", "")
+        vol = w.get(f"target_volume_{units}") or w.get("target_volume_km", "")
+
+        # Phase header when it changes
+        if phase and phase != current_phase:
+            if current_phase is not None:
+                lines.append("")
+            lines.append(f"── {phase} ──")
+            current_phase = phase
+
+        # Date range short form
+        try:
+            s = datetime.strptime(start, "%Y-%m-%d").strftime("%b %d")
+            e = datetime.strptime(end, "%Y-%m-%d").strftime("%b %d")
+            date_str = f"{s}–{e}"
+        except Exception:
+            date_str = start
+
+        vol_str = f"  {vol}{units}" if vol else ""
+        race_tag = "  🏁 RACE" if race_date and end and end >= race_date >= start else ""
+        lines.append(f"Wk {num:>2}  {date_str}{vol_str}{race_tag}")
+
+    # Telegram has a 4096 char limit — split if needed
+    msg = "\n".join(lines)
+    if len(msg) <= 4096:
+        telegram_client.send_message(chat_id, msg)
+    else:
+        # Split at midpoint on a blank line
+        mid = len(weeks) // 2
+        lines1 = [f"Full plan — {total} weeks (Part 1)", ""]
+        lines2 = [f"Full plan (Part 2)", ""]
+        current_phase = None
+        for w in weeks[:mid]:
+            _append_week_line(w, units, lines1, current_phase)
+        current_phase = None
+        for w in weeks[mid:]:
+            _append_week_line(w, units, lines2, current_phase)
+        telegram_client.send_message(chat_id, "\n".join(lines1))
+        telegram_client.send_message(chat_id, "\n".join(lines2))
+
+
+def _append_week_line(w: dict, units: str, lines: list, current_phase) -> None:
+    """Helper for split /plan all."""
+    num = w.get("week", "")
+    vol = w.get(f"target_volume_{units}") or w.get("target_volume_km", "")
+    start = w.get("start_date", "")
+    try:
+        from datetime import datetime
+        s = datetime.strptime(start, "%Y-%m-%d").strftime("%b %d")
+    except Exception:
+        s = start
+    vol_str = f"  {vol}{units}" if vol else ""
+    lines.append(f"Wk {num:>2}  {s}{vol_str}")
+
+
 def _send_help(chat_id: str) -> None:
     msg = (
         "Here's what I can do:\n\n"
         "/start — begin or resume onboarding\n"
         "/plan — this week's sessions\n"
         "/plan next — next week's sessions\n"
+        "/plan all — full plan overview\n"
         "/plan week N — any specific week\n"
         "/pace — your current training pace zones\n"
         "/forgetme — delete your account and data\n"
