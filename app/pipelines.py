@@ -503,6 +503,132 @@ def generate_and_send_plan(chat_id: str) -> None:
 # PIPELINE 5: MORNING REMINDER
 # ─────────────────────────────────────────────────────────────
 
+def _parse_pace_str(pace_str: str) -> float:
+    """Parse '6:00/km' or '6:00/mi' → seconds (per unit, ignoring the unit suffix)."""
+    pace_str = pace_str.split("/")[0].strip()
+    parts = pace_str.split(":")
+    try:
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+    except (ValueError, IndexError):
+        pass
+    return 0.0
+
+
+# ─────────────────────────────────────────────────────────────
+# PIPELINE 6: GOAL REVIEW (every 4 weeks)
+# ─────────────────────────────────────────────────────────────
+
+def goal_review(chat_id: str) -> None:
+    """4-week fitness check — compare actual easy paces to planned, offer updated goal."""
+    logger.info(f"Pipeline 6: Goal review [{chat_id}]")
+
+    if not user_store.has_strava(chat_id):
+        return
+
+    profile = user_store.get_profile(chat_id)
+    units = profile.get("units", "km")
+    current_goal = profile.get("goal_time", "")
+
+    if not current_goal or current_goal.lower() == "finish":
+        return
+
+    # Fetch last 4 weeks of activities
+    try:
+        four_weeks_ago = datetime.now() - timedelta(weeks=4)
+        activities = strava_client.get_activities(
+            chat_id,
+            after_epoch=four_weeks_ago.timestamp(),
+            per_page=100,
+            max_pages=2,
+        )
+    except Exception as e:
+        logger.error(f"Goal review Strava fetch failed for {chat_id}: {e}")
+        return
+
+    # Collect easy runs (short: 2–12 km) and their paces in s/km
+    easy_paces = []
+    for a in activities:
+        sport = (a.get("sport_type") or a.get("type") or "").lower()
+        if "run" not in sport:
+            continue
+        dist_km = (a.get("distance") or 0) / 1000
+        moving_time = a.get("moving_time") or 0
+        if 2.0 < dist_km < 12.0 and moving_time > 0:
+            easy_paces.append(moving_time / dist_km)  # seconds per km
+
+    if len(easy_paces) < 3:
+        logger.info(f"Goal review: not enough easy runs for {chat_id} ({len(easy_paces)} found)")
+        return
+
+    avg_easy_s_km = sum(easy_paces) / len(easy_paces)
+
+    # Load planned easy pace
+    paces = profile.get("paces", {})
+    planned_easy_str = paces.get("easy", "")
+    if not planned_easy_str:
+        return
+
+    # planned_easy_str is "6:00/km" or "6:00/mi" — parse to seconds per unit
+    planned_easy_s = _parse_pace_str(planned_easy_str)
+    if planned_easy_s <= 0:
+        return
+
+    # If miles, convert actual pace to s/mi for a fair comparison
+    if units == "mi":
+        avg_easy_compare = avg_easy_s_km * 1.60934
+    else:
+        avg_easy_compare = avg_easy_s_km
+
+    # If actual pace is NOT >8% faster than planned, nothing to report
+    pace_ratio = avg_easy_compare / planned_easy_s
+    if pace_ratio >= 0.92:
+        logger.info(f"Goal review: pace within range for {chat_id} (ratio={pace_ratio:.2f})")
+        return
+
+    # Fitness is ahead — re-predict goal times
+    predictions = plan_generator.predict_goal_times(profile)
+    new_realistic_str = predictions.get("realistic", "")
+    if not new_realistic_str:
+        return
+
+    current_s = plan_generator._time_str_to_seconds(current_goal)
+    new_realistic_s = plan_generator._time_str_to_seconds(new_realistic_str)
+
+    if current_s <= 0 or new_realistic_s <= 0:
+        return
+
+    diff_s = abs(current_s - new_realistic_s)
+    if diff_s < 300:  # <5 min — not worth bothering the user
+        logger.info(f"Goal review: goal unchanged for {chat_id} (diff={diff_s}s)")
+        return
+
+    conservative = predictions.get("conservative", "")
+    realistic = predictions.get("realistic", "")
+    aggressive = predictions.get("aggressive", "")
+    rationale = predictions.get("rationale", "your recent training")
+
+    direction = "faster" if new_realistic_s < current_s else "slower"
+    diff_min = diff_s // 60
+
+    msg = (
+        f"🔄 *4-week fitness check*\n\n"
+        f"Based on {rationale}, your fitness suggests a different target.\n\n"
+        f"Current goal: *{current_goal}*\n"
+        f"Updated prediction: *{realistic}* ({diff_min} min {direction})\n\n"
+        f"Want to update your goal?"
+    )
+
+    keyboard = [
+        [{"text": f"🟢 Conservative  {conservative}", "callback_data": f"goalreview:{conservative}"}],
+        [{"text": f"🎯 Realistic  {realistic}", "callback_data": f"goalreview:{realistic}"}],
+        [{"text": f"🔥 Aggressive  {aggressive}", "callback_data": f"goalreview:{aggressive}"}],
+        [{"text": f"Keep current goal ({current_goal})", "callback_data": "goalreview:keep"}],
+    ]
+    telegram_client.send_message_with_keyboard(chat_id, msg, keyboard)
+    logger.info(f"Goal review offer sent to {chat_id}")
+
+
 def morning_reminder(chat_id: str) -> None:
     """Send today's session as a morning reminder with action buttons."""
     logger.info(f"Pipeline 5: Morning reminder [{chat_id}]")

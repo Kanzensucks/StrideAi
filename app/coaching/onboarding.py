@@ -4,16 +4,16 @@ Steps (persisted in onboarding_state.json):
   0  → welcome + units
   1  → goal race name + date
   2  → race distance
-  3  → goal time
+  3  → Strava connect (sent immediately, non-blocking — auto-advances to 4)
   4  → days/week
   5  → long run day
   6  → experience level
   7  → current weekly mileage + longest recent run
   8  → recent PRs
-  9  → cross-training prefs
-  10 → injury history
-  11 → strava connect (sends OAuth link — plan generated after callback)
-  99 → complete
+  9  → goal prediction (3 options from fitness data)
+  10 → cross-training prefs
+  11 → injury history
+  12 → waiting for Strava (if not already connected) / finalise
 """
 
 import logging
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 PUBLIC_DOMAIN = os.environ.get("PUBLIC_DOMAIN", "localhost")
 
 # ─── Step definitions ─────────────────────────────────────────
+# Steps 3 (Strava early) and 9 (goal prediction) are handled in code.
 
 STEPS = {
     0: {
@@ -46,7 +47,7 @@ STEPS = {
             "Reply with the race name and date, like:\n"
             "Berlin Marathon, September 27 2026"
         ),
-        "field": None,  # custom parsing
+        "field": None,
         "type": "text",
     },
     2: {
@@ -60,15 +61,7 @@ STEPS = {
         "field": "race_distance",
         "type": "button",
     },
-    3: {
-        "question": (
-            "What's your goal time?\n\n"
-            "Any format works — 3:30:00, 3h30m, \"3 hours 30 mins\", \"sub 3:30\"\n"
-            "Or just say \"finish\" if completion is the goal."
-        ),
-        "field": "goal_time",
-        "type": "text",
-    },
+    # Step 3 = Strava early (auto-advance, no user input)
     4: {
         "question": "How many days per week can you train?",
         "buttons": [["3 days", "3"], ["4 days", "4"], ["5 days", "5"], ["6 days", "6"]],
@@ -104,28 +97,29 @@ STEPS = {
             "2. What's the longest run you've done in the last 6 weeks? (e.g. 18km or 11mi)\n\n"
             "Reply like: 40km, 18km"
         ),
-        "field": None,  # custom parsing
+        "field": None,
         "type": "text",
     },
     8: {
         "question": (
-            "Do you have any recent race times or PRs? These help calibrate your training paces.\n\n"
+            "Do you have any recent race times or PRs? These help calibrate your paces.\n\n"
             "Reply with any you have, e.g: 5k 22:30, 10k 48:00, HM 1:54:50\n\n"
             "Or just say \"skip\" if you don't have any."
         ),
-        "field": None,  # custom parsing
+        "field": None,
         "type": "text",
     },
-    9: {
+    # Step 9 = goal prediction (built dynamically)
+    10: {
         "question": (
             "What cross-training do you have access to? (Select all that apply)\n\n"
             "Type the numbers, e.g: 1 3 or just \"none\""
             "\n\n1. Bike (road or indoor)\n2. Swimming\n3. Gym / strength\n4. None"
         ),
-        "field": None,  # custom parsing
+        "field": None,
         "type": "text",
     },
-    10: {
+    11: {
         "question": (
             "Any current injuries or niggles I should know about?\n\n"
             "Be honest — I'll build around them. Or just say \"none\"."
@@ -133,14 +127,11 @@ STEPS = {
         "field": "injury_notes",
         "type": "text",
     },
-    11: {
-        "question": None,  # built dynamically — sends Strava OAuth link
-        "field": None,
-        "type": "strava",
-    },
 }
 
-TOTAL_STEPS = 12  # 0–11
+# Display step numbers for progress indicator (skips auto-advance step 3)
+_DISPLAY_STEP = {0: 1, 1: 2, 2: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11}
+TOTAL_STEPS = 11
 
 
 # ─── Main handler ─────────────────────────────────────────────
@@ -155,11 +146,20 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
     step = state.get("step", 0)
     data = state.get("data", {})
 
-    if step > 11:
-        return False  # Already done
+    # Step 12 = waiting for Strava connect (all questions answered)
+    if step >= 12:
+        return False
+
+    # Step 3 is auto-advance (Strava early) — if we're here, resend and advance
+    if step == 3:
+        _send_strava_early(chat_id)
+        state["step"] = 4
+        user_store.save_onboarding_state(chat_id, state)
+        _send_question(chat_id, 4)
+        return True
 
     step_def = STEPS.get(step)
-    if step_def is None:
+    if step_def is None and step != 9:
         return False
 
     # Process the incoming answer
@@ -190,9 +190,6 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
         else:
             _send_question(chat_id, step)
             return True
-
-    elif step == 3:
-        data["goal_time"] = _normalise_goal_time(answer)
 
     elif step == 4:
         if answer.isdigit() and 3 <= int(answer) <= 6:
@@ -229,9 +226,18 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
             data["prs"] = _parse_prs(answer)
 
     elif step == 9:
-        data["cross_training_prefs"] = _parse_cross_training(answer)
+        # Goal prediction — expect "goaltime:3:38:00" callback
+        if answer.startswith("goaltime:"):
+            data["goal_time"] = answer.split(":", 1)[1]
+        else:
+            # User typed instead of tapping — re-show buttons
+            _send_goal_prediction(chat_id, data)
+            return True
 
     elif step == 10:
+        data["cross_training_prefs"] = _parse_cross_training(answer)
+
+    elif step == 11:
         data["injury_notes"] = answer if answer.lower() != "none" else "none reported"
 
     # Advance step
@@ -240,12 +246,22 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
     state["data"] = data
     user_store.save_onboarding_state(chat_id, state)
 
-    # Send next step or finalise
-    if step == 11:
-        _send_strava_step(chat_id, data)
+    if step == 3:
+        # Auto-advance: send Strava link then immediately send step 4 question
+        _send_strava_early(chat_id)
+        state["step"] = 4
+        user_store.save_onboarding_state(chat_id, state)
+        _send_question(chat_id, 4)
+
+    elif step == 9:
+        # Goal prediction — build from collected data
+        _send_goal_prediction(chat_id, data)
+
     elif step >= 12:
-        _finalise_onboarding(chat_id, data)
+        # All questions answered
+        _finalise_or_wait(chat_id, data)
         return False
+
     else:
         _send_question(chat_id, step)
 
@@ -263,14 +279,27 @@ def resume_onboarding(chat_id: str) -> None:
     """Re-send the current step question (e.g. on /start with existing state)."""
     state = user_store.get_onboarding_state(chat_id)
     step = state.get("step", 0)
-    if step < 11:
+    data = state.get("data", {})
+
+    if step == 3:
+        _send_strava_early(chat_id)
+        state["step"] = 4
+        user_store.save_onboarding_state(chat_id, state)
+        _send_question(chat_id, 4)
+    elif step == 9:
+        _send_goal_prediction(chat_id, data)
+    elif step >= 12:
+        oauth_url = f"https://{PUBLIC_DOMAIN}/strava/connect?chat_id={chat_id}"
+        telegram_client.send_message(
+            chat_id,
+            f"Almost done! Connect Strava to generate your plan:\n{oauth_url}"
+        )
+    elif step in STEPS:
         _send_question(chat_id, step)
-    elif step == 11:
-        _send_strava_step(chat_id, state.get("data", {}))
 
 
 def complete_onboarding_after_strava(chat_id: str) -> None:
-    """Called from the Strava OAuth callback once tokens are saved."""
+    """Called from the Strava OAuth callback once tokens are saved (all questions done)."""
     state = user_store.get_onboarding_state(chat_id)
     data = state.get("data", {})
     _finalise_onboarding(chat_id, data)
@@ -283,7 +312,8 @@ def _send_question(chat_id: str, step: int) -> None:
     question = step_def["question"]
     buttons = step_def.get("buttons")
 
-    progress = f"({step + 1}/{TOTAL_STEPS}) "
+    display = _DISPLAY_STEP.get(step, step)
+    progress = f"({display}/{TOTAL_STEPS}) "
 
     if buttons:
         keyboard = [[{"text": label, "callback_data": value}] for label, value in buttons]
@@ -292,17 +322,69 @@ def _send_question(chat_id: str, step: int) -> None:
         telegram_client.send_message(chat_id, progress + question)
 
 
-def _send_strava_step(chat_id: str, data: dict) -> None:
-    """Send the Strava connect link."""
+def _send_strava_early(chat_id: str) -> None:
+    """Send Strava OAuth link early — user continues with questions immediately."""
     oauth_url = f"https://{PUBLIC_DOMAIN}/strava/connect?chat_id={chat_id}"
     msg = (
-        f"(12/{TOTAL_STEPS}) Almost done!\n\n"
-        "Connect your Strava so I can automatically analyse every run and build your "
-        "personalised plan.\n\n"
-        f"Tap here to connect: {oauth_url}\n\n"
-        "Once connected, I'll generate your full training plan. Takes about 10 seconds."
+        "📲 Quick side step — connect Strava so I can auto-analyse your runs:\n\n"
+        f"{oauth_url}\n\n"
+        "Tap the link and come straight back. Your answers are saving automatically."
     )
     telegram_client.send_message(chat_id, msg)
+
+
+def _send_goal_prediction(chat_id: str, data: dict) -> None:
+    """Show 3 predicted goal times based on fitness data."""
+    from app.coaching.plan_generator import predict_goal_times
+
+    predictions = predict_goal_times(data)
+    dist_label = data.get("race_distance", "marathon").replace("_", " ").title()
+    race_name = data.get("race_name", "your race")
+
+    con = predictions["conservative"]
+    rea = predictions["realistic"]
+    agg = predictions["aggressive"]
+    rationale = predictions["rationale"]
+
+    # Strip seconds for cleaner display (h:mm)
+    def _fmt(t):
+        parts = t.split(":")
+        return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else t
+
+    msg = (
+        f"(9/{TOTAL_STEPS}) Based on {rationale}, here's what's realistic for your "
+        f"{dist_label}:\n\n"
+        f"🟢 Conservative  {_fmt(con)}\n"
+        f"    Safe bet — high probability of success\n\n"
+        f"🎯 Realistic  {_fmt(rea)}\n"
+        f"    Achievable with consistent training\n\n"
+        f"🔥 Aggressive  {_fmt(agg)}\n"
+        f"    Possible if everything clicks\n\n"
+        f"Which goal are you targeting for {race_name}?"
+    )
+
+    keyboard = [
+        [{"text": f"🟢 Conservative  {_fmt(con)}", "callback_data": f"goaltime:{con}"}],
+        [{"text": f"🎯 Realistic  {_fmt(rea)}", "callback_data": f"goaltime:{rea}"}],
+        [{"text": f"🔥 Aggressive  {_fmt(agg)}", "callback_data": f"goaltime:{agg}"}],
+    ]
+    telegram_client.send_message_with_keyboard(chat_id, msg, keyboard)
+
+
+def _finalise_or_wait(chat_id: str, data: dict) -> None:
+    """Finalise or wait for Strava if not yet connected."""
+    if user_store.has_strava(chat_id):
+        _finalise_onboarding(chat_id, data)
+    else:
+        # Save state so Strava callback can complete it
+        user_store.save_onboarding_state(chat_id, {"step": 12, "data": data})
+        oauth_url = f"https://{PUBLIC_DOMAIN}/strava/connect?chat_id={chat_id}"
+        telegram_client.send_message(
+            chat_id,
+            "Almost done! Just need you to connect Strava to generate your plan.\n\n"
+            f"Tap here: {oauth_url}\n\n"
+            "Your answers are all saved — the plan generates the moment you connect."
+        )
 
 
 def _finalise_onboarding(chat_id: str, data: dict) -> None:
@@ -329,7 +411,7 @@ def _finalise_onboarding(chat_id: str, data: dict) -> None:
 
     telegram_client.send_message(
         chat_id,
-        "All set! Building your personalised training plan now — give me about 10 seconds..."
+        "All set! Building your personalised training plan now — give me about 2 minutes..."
     )
 
     import threading
@@ -344,17 +426,9 @@ def _finalise_onboarding(chat_id: str, data: dict) -> None:
 # ─── Parsers ──────────────────────────────────────────────────
 
 def _parse_race_name_and_date(text: str) -> dict | None:
-    """Parse race name + date from free-form text.
-
-    Handles many orderings:
-      - Gold Coast Marathon, July 5 2026
-      - July 5 2026, Gold Coast Marathon
-      - Nike Melbourne Marathon October 11 2026
-      - Gold Coast Marathon July 5 2026
-    """
+    """Parse race name + date from free-form text."""
     import re
 
-    # Date patterns to try extracting from anywhere in the string
     date_patterns = [
         r"(\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})",
         r"((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4})",
@@ -376,12 +450,10 @@ def _parse_race_name_and_date(text: str) -> dict | None:
         m = re.search(pattern, text, re.IGNORECASE)
         if m:
             date_str = m.group(1).strip().rstrip(",")
-            # Clean ordinal suffixes
             date_str_clean = re.sub(r"(\d+)(?:st|nd|rd|th)", r"\1", date_str)
             for fmt in formats:
                 try:
                     dt = datetime.strptime(date_str_clean.strip(), fmt)
-                    # Name is everything except the matched date
                     name = text[:m.start()].strip().strip(",").strip()
                     if not name:
                         name = text[m.end():].strip().strip(",").strip()
@@ -443,17 +515,7 @@ def _parse_prs(text: str) -> dict:
 
 
 def _normalise_goal_time(text: str) -> str:
-    """Convert any time format to h:mm:ss.
-
-    Handles:
-      3:30:00  → 3:30:00
-      3:30     → 3:30:00
-      3h30m    → 3:30:00
-      3 hours 30 mins → 3:30:00
-      3 hour 30  → 3:30:00
-      sub 3:30   → 3:30:00
-      finish     → finish
-    """
+    """Convert any time format to h:mm:ss (kept for /setrace compatibility)."""
     import re
 
     t = text.strip().lower()
@@ -461,20 +523,16 @@ def _normalise_goal_time(text: str) -> str:
     if t in ("finish", "just finish", "complete", "just complete"):
         return "finish"
 
-    # Strip leading "sub" / "under"
     t = re.sub(r"^(sub|under)\s*", "", t)
 
-    # Already h:mm:ss
     m = re.match(r"^(\d+):(\d{2}):(\d{2})$", t)
     if m:
         return f"{int(m.group(1))}:{m.group(2)}:{m.group(3)}"
 
-    # h:mm
     m = re.match(r"^(\d+):(\d{2})$", t)
     if m:
         return f"{int(m.group(1))}:{m.group(2)}:00"
 
-    # Natural language: "3h 30m", "3h30", "3 hours 30 minutes", "3 hour 29 mins"
     hours = re.search(r"(\d+)\s*h(?:our|ours|r)?", t)
     mins = re.search(r"(\d+)\s*m(?:in|ins|inute|inutes)?", t)
     secs = re.search(r"(\d+)\s*s(?:ec|ecs|econd|econds)?", t)
@@ -486,7 +544,6 @@ def _normalise_goal_time(text: str) -> str:
     if h or mi or s:
         return f"{h}:{mi:02d}:{s:02d}"
 
-    # Last resort: return as-is
     return text.strip()
 
 

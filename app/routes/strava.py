@@ -43,11 +43,15 @@ def _find_chat_id_by_athlete(athlete_id: int) -> str | None:
     return None
 
 
-def _oauth_result_page(success: bool) -> str:
+def _oauth_result_page(success: bool, generating: bool = False) -> str:
     if success:
-        return """<html><body style="font-family:sans-serif;text-align:center;padding:60px">
+        if generating:
+            body = "Head back to Telegram — your training plan is being generated now."
+        else:
+            body = "Head back to Telegram and keep going!"
+        return f"""<html><body style="font-family:sans-serif;text-align:center;padding:60px">
         <h2>Strava connected!</h2>
-        <p>Head back to Telegram — your training plan is being generated now.</p>
+        <p>{body}</p>
         </body></html>"""
     return """<html><body style="font-family:sans-serif;text-align:center;padding:60px">
     <h2>Something went wrong</h2>
@@ -143,9 +147,27 @@ def callback():
         if not profile.get("first_name") and tokens.get("athlete_firstname"):
             user_store.update_profile(chat_id, {"first_name": tokens["athlete_firstname"]})
 
-        onboarding.complete_onboarding_after_strava(chat_id)
-        logger.info(f"Strava connected for {chat_id}")
-        return _oauth_result_page(success=True)
+        if user_store.is_onboarded(chat_id):
+            # Already onboarded — user reconnecting Strava
+            telegram_client.send_message(chat_id, "Strava reconnected successfully. ✅")
+            logger.info(f"Strava reconnected for existing user {chat_id}")
+            return _oauth_result_page(success=True, generating=False)
+
+        # Mid-onboarding — check if all questions are answered
+        state = user_store.get_onboarding_state(chat_id)
+        if state.get("step", 0) >= 12:
+            # All questions done, just needed Strava — generate plan now
+            onboarding.complete_onboarding_after_strava(chat_id)
+            logger.info(f"Strava callback finalised onboarding for {chat_id}")
+            return _oauth_result_page(success=True, generating=True)
+        else:
+            # Still mid-onboarding — save tokens, let user continue
+            telegram_client.send_message(
+                chat_id,
+                "✅ Strava connected! Head back and keep going with the questions."
+            )
+            logger.info(f"Strava connected mid-onboarding for {chat_id} (step {state.get('step', 0)})")
+            return _oauth_result_page(success=True, generating=False)
 
     except Exception as e:
         logger.error(f"Strava callback failed for {chat_id}: {e}", exc_info=True)

@@ -53,6 +53,16 @@ def test_morning(chat_id):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@admin_bp.route("/test/goal_review/<chat_id>", methods=["POST"])
+def test_goal_review(chat_id):
+    from app import pipelines
+    try:
+        pipelines.goal_review(chat_id)
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @admin_bp.route("/admin/webhook/setup", methods=["POST"])
 def setup_strava_webhook():
     """One-shot: register the Strava push subscription for this domain."""

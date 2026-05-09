@@ -81,6 +81,96 @@ DISTANCE_KM = {
 }
 
 
+def _seconds_to_time_str(total_seconds: int) -> str:
+    """Convert total seconds to h:mm:ss string."""
+    h = total_seconds // 3600
+    m = (total_seconds % 3600) // 60
+    s = total_seconds % 60
+    return f"{h}:{m:02d}:{s:02d}"
+
+
+def _estimate_from_volume(weekly_km: float, longest_km: float,
+                           experience: str, distance: str) -> int:
+    """Estimate realistic race time in seconds from training data (no PRs)."""
+    # Base marathon time from weekly volume (Jack Daniels-inspired)
+    volume_map = [
+        (70, 195 * 60),  # 3:15
+        (60, 210 * 60),  # 3:30
+        (50, 225 * 60),  # 3:45
+        (40, 245 * 60),  # 4:05
+        (30, 265 * 60),  # 4:25
+        (20, 285 * 60),  # 4:45
+        (0,  310 * 60),  # 5:10
+    ]
+    base_s = 310 * 60
+    for km_thresh, time_s in volume_map:
+        if weekly_km >= km_thresh:
+            base_s = time_s
+            break
+
+    # Long run readiness adjustment
+    if longest_km >= 32:
+        base_s -= 10 * 60
+    elif longest_km >= 26:
+        base_s -= 5 * 60
+    elif longest_km < 18:
+        base_s += 10 * 60
+    elif longest_km < 15:
+        base_s += 20 * 60
+
+    # Experience adjustment
+    base_s += {"advanced": -10 * 60, "intermediate": 0, "beginner": 15 * 60}.get(experience, 0)
+
+    # Scale to target distance via Riegel
+    target_km = DISTANCE_KM.get(distance, 42.195)
+    marathon_km = DISTANCE_KM["marathon"]
+    if target_km != marathon_km:
+        base_s = int(base_s * (target_km / marathon_km) ** 1.06)
+
+    return base_s
+
+
+def predict_goal_times(profile: dict) -> dict:
+    """Predict race goal times from fitness data.
+
+    Priority: PRs (Riegel formula) > volume-based estimate.
+    Returns dict with conservative / realistic / aggressive / rationale.
+    """
+    distance = profile.get("race_distance", "marathon")
+    weekly_km = float(profile.get("current_weekly_km", 30))
+    longest_km = float(profile.get("longest_recent_run_km", 15))
+    experience = profile.get("experience_level", "intermediate")
+    prs = profile.get("prs", {})
+    target_km = DISTANCE_KM.get(distance, 42.195)
+
+    # Try PR-based prediction first (most accurate)
+    best_s = None
+    pr_source = None
+    for pr_dist in ["half_marathon", "10k", "5k"]:
+        if pr_dist in prs and pr_dist != distance:
+            pr_s = _time_str_to_seconds(prs[pr_dist])
+            if pr_s > 0:
+                source_km = DISTANCE_KM[pr_dist]
+                predicted = int(pr_s * (target_km / source_km) ** 1.06)
+                if best_s is None or predicted < best_s:
+                    best_s = predicted
+                    pr_source = pr_dist.replace("_", " ")
+
+    if best_s:
+        realistic_s = best_s
+        rationale = f"extrapolated from your {pr_source} PR"
+    else:
+        realistic_s = _estimate_from_volume(weekly_km, longest_km, experience, distance)
+        rationale = f"{int(weekly_km)}km/week training + {int(longest_km)}km long run"
+
+    return {
+        "conservative": _seconds_to_time_str(int(realistic_s * 1.06)),
+        "realistic": _seconds_to_time_str(realistic_s),
+        "aggressive": _seconds_to_time_str(int(realistic_s * 0.94)),
+        "rationale": rationale,
+    }
+
+
 def calculate_paces(profile: dict) -> dict:
     """Calculate training pace zones from goal time + race distance.
 

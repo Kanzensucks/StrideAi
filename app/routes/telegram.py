@@ -73,6 +73,10 @@ def _handle_callback(callback: dict) -> None:
         _handle_setrace_step(chat_id, dist, is_callback=True)
         return
 
+    if data.startswith("goalreview:"):
+        _handle_goalreview_callback(chat_id, data)
+        return
+
     if data.startswith("session_action:"):
         parts = data.split(":")
         if len(parts) == 4:
@@ -458,6 +462,43 @@ def _send_help(chat_id: str) -> None:
         "request adjustments, or tell me how you're feeling."
     )
     telegram_client.send_message(chat_id, msg)
+
+
+def _handle_goalreview_callback(chat_id: str, data: str) -> None:
+    """Handle goal review button — accept a new goal time or keep the current one."""
+    from app.coaching import plan_generator
+
+    value = data.split(":", 1)[1]
+
+    if value == "keep":
+        profile = user_store.get_profile(chat_id)
+        current = profile.get("goal_time", "your current goal")
+        telegram_client.send_message(
+            chat_id,
+            f"Got it — keeping {current}. Keep up the consistent work! 💪"
+        )
+        return
+
+    # value is a new goal time string e.g. "3:38:00"
+    new_goal = value
+    profile = user_store.update_profile(chat_id, {"goal_time": new_goal})
+
+    try:
+        paces = plan_generator.calculate_paces(profile)
+        if paces:
+            user_store.update_profile(chat_id, {"paces": paces})
+    except Exception:
+        pass
+
+    dist_label = profile.get("race_distance", "").replace("_", " ").title()
+    telegram_client.send_message(
+        chat_id,
+        f"Goal updated to *{new_goal}* for your {dist_label}. ✅\n\n"
+        f"Pace zones recalculated — type /pace to see them.\n\n"
+        f"Want me to regenerate your training plan with the new goal? "
+        f"Just say so and I'll get started."
+    )
+    logger.info(f"Goal review accepted: {chat_id} updated goal to {new_goal}")
 
 
 def _execute_forgetme(chat_id: str) -> None:

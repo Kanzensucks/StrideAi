@@ -47,6 +47,34 @@ def _poll_strava_for_user(chat_id: str) -> None:
         logger.error(f"Scheduler: Strava poll failed for {chat_id}: {e}")
 
 
+def _should_run_4week_job(chat_id: str, job_key: str, hour: int,
+                          minute_range: tuple, weekday: int = None) -> bool:
+    """Like _should_run_job but fires at most once every 28 days."""
+    profile = user_store.get_profile(chat_id)
+    tz_name = profile.get("timezone", "UTC")
+    now = _now_in_tz(tz_name)
+    if weekday is not None and now.weekday() != weekday:
+        return False
+    if not (now.hour == hour and minute_range[0] <= now.minute <= minute_range[1]):
+        return False
+    state = user_store.get_scheduler_state(chat_id)
+    last_run = state.get(job_key)
+    if last_run:
+        try:
+            last_dt = datetime.fromisoformat(last_run)
+            # Make naive datetimes timezone-aware for comparison
+            if last_dt.tzinfo is None:
+                import pytz as _pytz
+                last_dt = _pytz.UTC.localize(last_dt)
+            if (now - last_dt).days < 28:
+                return False
+        except Exception:
+            pass
+    state[job_key] = now.isoformat()
+    user_store.save_scheduler_state(chat_id, state)
+    return True
+
+
 def _should_run_job(chat_id: str, job_key: str, hour: int,
                     minute_range: tuple, weekday: int = None) -> bool:
     profile = user_store.get_profile(chat_id)
@@ -99,6 +127,11 @@ def start_scheduler() -> threading.Thread:
 
                 if _should_run_job(chat_id, "weekly_report", 20, (30, 31), weekday=6):
                     threading.Thread(target=pipelines.weekly_report,
+                                     args=(chat_id,), daemon=True).start()
+
+                # 4-week goal review — Monday 9am, at most once every 28 days
+                if _should_run_4week_job(chat_id, "goal_review", 9, (0, 1), weekday=0):
+                    threading.Thread(target=pipelines.goal_review,
                                      args=(chat_id,), daemon=True).start()
 
             time.sleep(30)
