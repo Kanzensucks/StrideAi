@@ -44,7 +44,7 @@ STEPS = {
         "question": (
             "What race are you training for?\n\n"
             "Reply with the race name and date, like:\n"
-            "Gold Coast Marathon, July 5 2026"
+            "Berlin Marathon, September 27 2026"
         ),
         "field": None,  # custom parsing
         "type": "text",
@@ -180,7 +180,7 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
         else:
             telegram_client.send_message(
                 chat_id,
-                "I couldn't quite parse that. Try: Gold Coast Marathon, July 5 2026"
+                "I couldn't quite parse that. Try: Berlin Marathon, September 27 2026"
             )
             return True
 
@@ -218,7 +218,7 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
         else:
             telegram_client.send_message(
                 chat_id,
-                "Couldn't parse that. Try: 40km, 18km (or 25mi, 11mi)"
+                "Couldn't parse that. Try: 35km, 16km (or 22mi, 10mi)"
             )
             return True
 
