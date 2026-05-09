@@ -379,6 +379,29 @@ def save_scheduler_state(chat_id: str, state: dict) -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# /setrace — change race goal
+# ─────────────────────────────────────────────────────────────
+
+def get_setrace_state(chat_id: str) -> dict:
+    path = os.path.join(_user_dir(chat_id), "setrace_state.json")
+    return _read_json(path, {})
+
+
+def save_setrace_state(chat_id: str, state: dict) -> None:
+    _ensure_user_dir(chat_id)
+    path = os.path.join(_user_dir(chat_id), "setrace_state.json")
+    _write_json(path, state)
+
+
+def clear_setrace_state(chat_id: str) -> None:
+    path = os.path.join(_user_dir(chat_id), "setrace_state.json")
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────
 # /forgetme — wipe everything
 # ─────────────────────────────────────────────────────────────
 

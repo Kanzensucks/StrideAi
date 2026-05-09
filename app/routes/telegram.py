@@ -68,6 +68,11 @@ def _handle_callback(callback: dict) -> None:
         onboarding.handle_onboarding_message(chat_id, "", callback_data=data)
         return
 
+    if data.startswith("setrace_dist:"):
+        dist = data.split(":", 1)[1]
+        _handle_setrace_step(chat_id, dist, is_callback=True)
+        return
+
     if data.startswith("session_action:"):
         parts = data.split(":")
         if len(parts) == 4:
@@ -108,6 +113,11 @@ def _handle_message(chat_id: str, text: str, from_user: dict, msg_timestamp) -> 
         onboarding.handle_onboarding_message(chat_id, text)
         return
 
+    # Active /setrace flow takes priority over regular chat
+    if user_store.get_setrace_state(chat_id).get("active"):
+        _handle_setrace_step(chat_id, text)
+        return
+
     pipelines.handle_chat(chat_id, text, msg_timestamp=msg_timestamp)
 
 
@@ -142,6 +152,18 @@ def _handle_command(chat_id: str, text: str, from_user: dict) -> None:
             telegram_client.send_message(chat_id, "\n".join(lines))
         else:
             telegram_client.send_message(chat_id, "Pace zones not calculated yet — finish onboarding first.")
+
+    elif command == "/setrace":
+        if not user_store.is_onboarded(chat_id):
+            telegram_client.send_message(chat_id, "Finish onboarding first — type /start.")
+        else:
+            user_store.save_setrace_state(chat_id, {"active": True, "step": 1, "data": {}})
+            telegram_client.send_message(
+                chat_id,
+                "Let's update your race goal.\n\n"
+                "What race are you training for? Reply with the name and date:\n"
+                "e.g. Berlin Marathon, September 27 2026"
+            )
 
     elif command == "/forgetme":
         keyboard = [[
@@ -252,6 +274,98 @@ def _send_week_plan(chat_id: str, week: dict, label: str, units: str) -> None:
     telegram_client.send_message(chat_id, "\n".join(lines))
 
 
+def _handle_setrace_step(chat_id: str, text: str, is_callback: bool = False) -> None:
+    """3-step flow: race name+date → distance → goal time → regenerate plan."""
+    from app.coaching.onboarding import _parse_race_name_and_date, _normalise_goal_time
+    from app import pipelines
+    import threading
+
+    state = user_store.get_setrace_state(chat_id)
+    step = state.get("step", 1)
+    data = state.get("data", {})
+
+    if step == 1:
+        # Expecting race name + date
+        parsed = _parse_race_name_and_date(text)
+        if not parsed:
+            telegram_client.send_message(
+                chat_id,
+                "Couldn't parse that — try: Berlin Marathon, September 27 2026"
+            )
+            return
+        data["race_name"] = parsed["name"]
+        data["race_date"] = parsed["date"]
+        state["step"] = 2
+        state["data"] = data
+        user_store.save_setrace_state(chat_id, state)
+
+        keyboard = [
+            [{"text": "5k", "callback_data": "setrace_dist:5k"}],
+            [{"text": "10k", "callback_data": "setrace_dist:10k"}],
+            [{"text": "Half Marathon", "callback_data": "setrace_dist:half_marathon"}],
+            [{"text": "Marathon", "callback_data": "setrace_dist:marathon"}],
+        ]
+        telegram_client.send_message_with_keyboard(chat_id, "What distance?", keyboard)
+
+    elif step == 2:
+        # Expecting distance (from button callback)
+        if text not in ("5k", "10k", "half_marathon", "marathon"):
+            keyboard = [
+                [{"text": "5k", "callback_data": "setrace_dist:5k"}],
+                [{"text": "10k", "callback_data": "setrace_dist:10k"}],
+                [{"text": "Half Marathon", "callback_data": "setrace_dist:half_marathon"}],
+                [{"text": "Marathon", "callback_data": "setrace_dist:marathon"}],
+            ]
+            telegram_client.send_message_with_keyboard(chat_id, "Tap one of the options below:", keyboard)
+            return
+        data["race_distance"] = text
+        state["step"] = 3
+        state["data"] = data
+        user_store.save_setrace_state(chat_id, state)
+        telegram_client.send_message(
+            chat_id,
+            "What's your goal time?\n"
+            "Any format works — 3:30:00, 3h30m, sub 3:30, or \"finish\""
+        )
+
+    elif step == 3:
+        # Expecting goal time
+        data["goal_time"] = _normalise_goal_time(text)
+        user_store.clear_setrace_state(chat_id)
+
+        # Update profile with new race details
+        from app.coaching import plan_generator
+        profile = user_store.update_profile(chat_id, {
+            "race_name": data["race_name"],
+            "race_date": data["race_date"],
+            "race_distance": data["race_distance"],
+            "goal_time": data["goal_time"],
+            "paces": {},  # will be recalculated
+        })
+
+        # Recalculate paces
+        try:
+            paces = plan_generator.calculate_paces(profile)
+            if paces:
+                user_store.update_profile(chat_id, {"paces": paces})
+        except Exception:
+            pass
+
+        dist_label = data["race_distance"].replace("_", " ").title()
+        telegram_client.send_message(
+            chat_id,
+            f"Got it — {data['race_name']} ({dist_label}) on {data['race_date']} "
+            f"in {data['goal_time']}.\n\n"
+            f"Regenerating your full plan now — give me about 2 minutes..."
+        )
+
+        threading.Thread(
+            target=pipelines.generate_and_send_plan,
+            args=(chat_id,),
+            daemon=True,
+        ).start()
+
+
 def _send_all_weeks_plan(chat_id: str, plan: dict, units: str) -> None:
     """Send a compact one-line-per-week overview of the full plan."""
     from datetime import datetime
@@ -337,6 +451,7 @@ def _send_help(chat_id: str) -> None:
         "/plan all — full plan overview\n"
         "/plan week N — any specific week\n"
         "/pace — your current training pace zones\n"
+        "/setrace — change your target race, distance or goal time\n"
         "/forgetme — delete your account and data\n"
         "/help — show this message\n\n"
         "You can also just chat with me — ask about your training, "
