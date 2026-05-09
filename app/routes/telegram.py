@@ -56,6 +56,14 @@ def _handle_callback(callback: dict) -> None:
     if not chat_id or not data:
         return
 
+    # Handle forgetme at any point (even during onboarding)
+    if data == "forgetme_confirm":
+        _execute_forgetme(chat_id)
+        return
+    elif data == "forgetme_cancel":
+        telegram_client.send_message(chat_id, "No worries — your data is safe.")
+        return
+
     if user_store.user_exists(chat_id) and not user_store.is_onboarded(chat_id):
         onboarding.handle_onboarding_message(chat_id, "", callback_data=data)
         return
@@ -72,10 +80,7 @@ def _handle_callback(callback: dict) -> None:
             if msg:
                 telegram_client.send_message(chat_id, msg)
 
-    elif data == "forgetme_confirm":
-        _execute_forgetme(chat_id)
-    elif data == "forgetme_cancel":
-        telegram_client.send_message(chat_id, "No worries — your data is safe.")
+    # (forgetme handled above before onboarding check)
 
 
 def _handle_message(chat_id: str, text: str, from_user: dict, msg_timestamp) -> None:
@@ -89,6 +94,7 @@ def _handle_message(chat_id: str, text: str, from_user: dict, msg_timestamp) -> 
             return
         user_store.create_user(chat_id)
 
+    # Commands always take priority — even during onboarding
     if text.startswith("/"):
         _handle_command(chat_id, text, from_user)
         return
