@@ -165,9 +165,11 @@ def generate_plan(profile: dict) -> dict:
         today = datetime.now()
         total_weeks = max(4, (race_dt - today).days // 7)
         plan_start = today + timedelta(days=(7 - today.weekday()) % 7 or 7)  # next Monday
+        race_day_of_week = race_dt.strftime("%A")  # e.g. "Sunday"
     except ValueError:
         total_weeks = 12
         plan_start = datetime.now()
+        race_day_of_week = "Sunday"
 
     units = profile.get("units", "km")
     dist_label = profile.get("race_distance", "marathon").replace("_", " ").title()
@@ -195,8 +197,9 @@ Rules:
 - Taper: final 15% of the plan — reduce volume, maintain intensity.
 - Include race-pace work only from week 4 onward (for plans 8+ weeks).
 - Injury notes: {injury_notes} — build around these.
+- CRITICAL: Generate exactly {total_weeks} weeks. The race ({race_date_str}) falls on a {race_day_of_week}. Place the Race session ONLY in week {total_weeks} on {race_day_of_week}. All other weeks are training weeks — no race session before week {total_weeks}.
 
-Session types to use: easy, long, threshold, intervals, race_pace, cross_train, strength, rest.
+Session types to use: easy, long, threshold, intervals, race_pace, cross_train, strength, rest, race.
 Each session must have: day (3-letter abbreviation), type, distance_{units} (number or null for cross-train/rest), pace (string or null), notes (string), is_key_session (bool).
 
 Return ONLY valid JSON — no explanations, no markdown, no code fences. Start with {{"""
