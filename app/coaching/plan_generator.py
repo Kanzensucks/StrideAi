@@ -42,6 +42,7 @@ from app.config import Config
 logger = logging.getLogger(__name__)
 
 MODEL_OPUS = "claude-opus-4-20250514"
+MODEL_SONNET = "claude-sonnet-4-20250514"
 
 
 # ─── Pace calculation ─────────────────────────────────────────
@@ -282,130 +283,294 @@ def _load_methodology() -> str:
         return ""
 
 
-# ─── Plan generation ─────────────────────────────────────────
+# ─── Plan generation — two-brain orchestrator ────────────────
 
-def generate_plan(profile: dict) -> dict:
-    """Generate a full training plan using Claude Opus.
-
-    Called once after onboarding. Returns the plan dict.
-    """
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-    methodology = _load_methodology()
-    paces = calculate_paces(profile)
-    paces_text = "\n".join(f"  {k}: {v}" for k, v in paces.items()) if paces else "  (use approximate zones from methodology)"
-
-    race_date_str = profile.get("race_date", "")
-    try:
-        race_dt = datetime.strptime(race_date_str, "%Y-%m-%d")
-        today = datetime.now()
-        total_weeks = max(4, (race_dt - today).days // 7)
-        plan_start = today + timedelta(days=(7 - today.weekday()) % 7 or 7)  # next Monday
-        race_day_of_week = race_dt.strftime("%A")  # e.g. "Sunday"
-    except ValueError:
-        total_weeks = 12
-        plan_start = datetime.now()
-        race_day_of_week = "Sunday"
-
-    units = profile.get("units", "km")
-    dist_label = profile.get("race_distance", "marathon").replace("_", " ").title()
-    long_run_day = profile.get("long_run_day", "Sunday")
-    days_per_week = profile.get("days_per_week", 4)
-    cross_train = profile.get("cross_training_prefs", [])
-    cross_str = ", ".join(cross_train) if cross_train else "none"
-    experience = profile.get("experience_level", "intermediate")
-    weekly_km = profile.get("current_weekly_km", 30)
-    longest_run = profile.get("longest_recent_run_km", 15)
-    injury_notes = profile.get("injury_notes", "none reported")
-    first_name = profile.get("first_name", "Athlete")
-
-    system_prompt = f"""You are StrideAI, an expert running coach. Generate a complete, personalised training plan in JSON format.
-
-{methodology}
-
-Rules:
-- All distances in {units}. All paces in per {units}.
-- Long run day: {long_run_day} only.
-- Training days per week: {days_per_week}.
-- Cross-training available: {cross_str}.
-- Never exceed 30% of weekly volume in a single session.
-- Week 4, 8, 12+ (every 4th week): recovery week at ~70% of prior week's volume.
-- Taper: final 15% of the plan — reduce volume, maintain intensity.
-- Include race-pace work only from week 4 onward (for plans 8+ weeks).
-- Injury notes: {injury_notes} — build around these.
-- CRITICAL: Generate exactly {total_weeks} weeks. The race ({race_date_str}) falls on a {race_day_of_week}. Place the Race session ONLY in week {total_weeks} on {race_day_of_week}. All other weeks are training weeks — no race session before week {total_weeks}.
-
-Session types to use: easy, long, threshold, intervals, race_pace, cross_train, strength, rest, race.
-Each session must have: day (3-letter abbreviation), type, distance_{units} (number or null for cross-train/rest), pace (string or null), notes (string), is_key_session (bool).
-
-Return ONLY valid JSON — no explanations, no markdown, no code fences. Start with {{"""
-
-    user_message = f"""Generate a {total_weeks}-week training plan for:
-Name: {first_name}
-Goal: {dist_label} on {race_date_str} in {profile.get('goal_time', 'finish')}
-Experience: {experience}
-Current weekly volume: {weekly_km}{units} | Longest recent run: {longest_run}{units}
-PRs: {json.dumps(profile.get('prs', {}))}
-Training pace zones:
-{paces_text}
-
-Plan starts: {plan_start.strftime('%Y-%m-%d')} (Monday)
-Total weeks: {total_weeks}
-Long run day: {long_run_day}
-Days/week: {days_per_week}
-Cross-training: {cross_str}
-Injury notes: {injury_notes}
-
-Return JSON matching this exact structure:
-{{
-  "race_date": "{race_date_str}",
-  "race_distance": "{profile.get('race_distance', 'marathon')}",
-  "goal_time": "{profile.get('goal_time', 'finish')}",
-  "total_weeks": {total_weeks},
-  "generated_at": "{datetime.now().isoformat()}",
-  "weeks": [
-    {{
-      "week": 1,
-      "phase": "base",
-      "start_date": "",
-      "end_date": "",
-      "target_volume_{units}": 0,
-      "sessions": [
-        {{
-          "day": "Mon",
-          "type": "easy",
-          "distance_{units}": 6,
-          "pace": "6:00/{units}",
-          "notes": "Keep effort conversational.",
-          "is_key_session": false
-        }}
-      ]
-    }}
-  ]
-}}"""
-
-    logger.info(f"Generating plan for user (Opus, {total_weeks} weeks)")
-
-    with client.messages.stream(
-        model=MODEL_OPUS,
-        max_tokens=32000,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        raw = stream.get_final_text()
-
+def _strip_fences(raw: str) -> str:
+    """Remove markdown code fences if present."""
     raw = raw.strip()
-
-    # Strip any accidental markdown fences
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
-    raw = raw.strip()
+    return raw.strip()
 
-    plan = json.loads(raw)
 
-    # Assign actual start/end dates to each week
-    plan["weeks"] = _assign_week_dates(plan["weeks"], plan_start)
+def _build_inputs(profile: dict, strava_activities: list) -> tuple[dict, dict]:
+    """Build the ATHLETE and RACE objects for Brain 1."""
+    # Strava fitness summary (last 8 weeks)
+    strava_summary = {}
+    if strava_activities:
+        run_acts = [
+            a for a in strava_activities
+            if "run" in (a.get("sport_type") or a.get("type") or "").lower()
+        ]
+        if run_acts:
+            total_km = sum((a.get("distance") or 0) / 1000 for a in run_acts)
+            weeks_span = max(1, len(strava_activities) / 7)  # rough
+            long_runs = sorted(
+                [(a.get("distance") or 0) / 1000 for a in run_acts], reverse=True
+            )
+            strava_summary = {
+                "activity_count_8wk": len(run_acts),
+                "avg_weekly_km": round(total_km / 8, 1),
+                "recent_long_run_km": round(long_runs[0], 1) if long_runs else 0,
+            }
 
+    # Riegel estimate for the fitness floor
+    riegel_estimate = ""
+    prs = profile.get("prs", {})
+    dist = profile.get("race_distance", "marathon")
+    target_km = DISTANCE_KM.get(dist, 42.195)
+    for pr_dist in ["half_marathon", "10k", "5k"]:
+        if pr_dist in prs and pr_dist != dist:
+            pr_s = _time_str_to_seconds(prs[pr_dist])
+            if pr_s > 0:
+                source_km = DISTANCE_KM[pr_dist]
+                predicted_s = int(pr_s * (target_km / source_km) ** 1.06)
+                riegel_estimate = _seconds_to_time_str(predicted_s)
+                break
+
+    athlete = {
+        "profile": {
+            "experience_level": profile.get("experience_level", "intermediate"),
+            "current_weekly_km": float(profile.get("current_weekly_km", 30)),
+            "longest_recent_run_km": float(profile.get("longest_recent_run_km", 15)),
+            "injury_notes": profile.get("injury_notes", "none reported"),
+            "prs": profile.get("prs", {}),
+        },
+        "fitness_markers": {
+            "riegel_estimate": riegel_estimate or "unknown",
+            **strava_summary,
+        },
+        "constraints": {
+            "days_per_week": profile.get("days_per_week", 4),
+            "long_run_day": profile.get("long_run_day", "Sunday"),
+            "cross_training": profile.get("cross_training_prefs", []),
+            "units": profile.get("units", "km"),
+        },
+    }
+
+    race = {
+        "basics": {
+            "name": profile.get("race_name", "Goal Race"),
+            "date": profile.get("race_date", ""),
+            "distance": profile.get("race_distance", "marathon"),
+        }
+    }
+
+    return athlete, race
+
+
+def _run_planner_brain(athlete: dict, race: dict, progression: str, today: str) -> dict:
+    """Brain 1: Planner (Opus).
+
+    Takes the full athlete + race context and produces:
+    - phases with weekly_km per week
+    - A/B/C goals (floor rule enforced)
+    - design notes + coach summary
+    """
+    from app.coaching.prompts import PLANNER_SYSTEM_PROMPT
+
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    user_message = json.dumps({
+        "ATHLETE": athlete,
+        "RACE": race,
+        "PROGRESSION": progression,
+        "TODAY": today,
+    }, indent=2)
+
+    logger.info("Brain 1 (Planner/Opus): starting...")
+
+    with client.messages.stream(
+        model=MODEL_OPUS,
+        max_tokens=4000,
+        system=PLANNER_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+    ) as stream:
+        raw = stream.get_final_text()
+
+    result = json.loads(_strip_fences(raw))
+    logger.info("Brain 1 (Planner): complete")
+    return result
+
+
+def _run_session_builder_brain(
+    planner_output: dict,
+    athlete: dict,
+    units: str,
+    paces: dict,
+    total_weeks: int,
+    methodology: str,
+    race_date_str: str,
+    race_day_of_week: str,
+) -> list:
+    """Brain 2: Session Builder (Sonnet).
+
+    Takes Brain 1's macro phases and fills in individual sessions for every week.
+    Returns a list of week dicts with sessions[].
+    """
+    from app.coaching.prompts import SESSION_BUILDER_SYSTEM_PROMPT
+
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    long_run_day = athlete["constraints"]["long_run_day"]
+    days_per_week = athlete["constraints"]["days_per_week"]
+    cross_training = ", ".join(athlete["constraints"]["cross_training"]) or "none"
+    injury_notes = athlete["profile"]["injury_notes"]
+
+    paces_text = "\n".join(f"  {k}: {v}" for k, v in paces.items()) if paces else "  (use approximate zones)"
+
+    # Flatten phases into a simple week list for Brain 2
+    phases = planner_output.get("training_plan", {}).get("phases", [])
+    week_structure = []
+    for phase in phases:
+        name = phase.get("name", "base")
+        week_numbers = phase.get("week_numbers", [])
+        weekly_kms = phase.get("weekly_km", [])
+        for i, wn in enumerate(week_numbers):
+            km = weekly_kms[i] if i < len(weekly_kms) else 0
+            week_structure.append({"week": wn, "phase": name, f"target_volume_{units}": km})
+
+    # Sort by week number
+    week_structure.sort(key=lambda w: w["week"])
+
+    system = SESSION_BUILDER_SYSTEM_PROMPT.replace("{long_run_day}", long_run_day)\
+        .replace("{days_per_week}", str(days_per_week))\
+        .replace("{units}", units)\
+        .replace("{race_day_of_week}", race_day_of_week)\
+        .replace("{cross_training}", cross_training)\
+        .replace("{injury_notes}", injury_notes)\
+        .replace("{methodology}", methodology[:3000])  # trim to avoid token bloat
+
+    user_message = (
+        f"Fill in sessions for each of the {total_weeks} weeks below.\n"
+        f"Race: {athlete['constraints'].get('long_run_day', '')} — {race_date_str} ({athlete['constraints'].get('units', 'km')})\n"
+        f"Race day of week: {race_day_of_week}\n"
+        f"Training pace zones:\n{paces_text}\n\n"
+        f"Week structure:\n{json.dumps(week_structure, indent=2)}\n\n"
+        f"Return a JSON array of {total_weeks} week objects, each with a sessions[] array.\n["
+    )
+
+    logger.info(f"Brain 2 (Session Builder/Sonnet): building {total_weeks} weeks...")
+
+    with client.messages.stream(
+        model=MODEL_SONNET,
+        max_tokens=32000,
+        system=system,
+        messages=[{"role": "user", "content": user_message}],
+    ) as stream:
+        raw = stream.get_final_text()
+
+    # The user message ended with "[" so we prepend it
+    raw_full = "[" + raw.strip()
+    raw_full = _strip_fences(raw_full)
+    if not raw_full.startswith("["):
+        raw_full = "[" + raw_full
+
+    weeks = json.loads(raw_full)
+    logger.info(f"Brain 2 (Session Builder): complete — {len(weeks)} weeks")
+    return weeks
+
+
+def generate_plan(profile: dict) -> dict:
+    """Generate a full training plan using two coordinated brains.
+
+    Brain 1 (Opus/Planner): backwards-designs the macro structure —
+      phases, weekly km, A/B/C goals, taper.
+    Brain 2 (Sonnet/Session Builder): fills individual sessions into
+      each week respecting the runner's chosen training slots.
+
+    Returns the plan dict (same shape as before — no breaking changes to callers).
+    """
+    today = datetime.now()
+    today_str = today.strftime("%Y-%m-%d")
+
+    race_date_str = profile.get("race_date", "")
+    try:
+        race_dt = datetime.strptime(race_date_str, "%Y-%m-%d")
+        # Next Monday from today (always moves forward, even if today is Monday)
+        plan_start = today + timedelta(days=(7 - today.weekday()) % 7 or 7)
+        # +1 so the race week is included as the final week
+        total_weeks = max(4, ((race_dt - plan_start).days // 7) + 1)
+        race_day_of_week = race_dt.strftime("%A")
+    except ValueError:
+        plan_start = today
+        total_weeks = 12
+        race_day_of_week = "Sunday"
+
+    units = profile.get("units", "km")
+
+    # Fetch Strava activities (last 8 weeks) — silent fail
+    strava_activities = []
+    try:
+        from app.integrations import strava_client
+        from datetime import timedelta as _td
+        eight_weeks_ago = today - _td(weeks=8)
+        strava_activities = strava_client.get_activities(
+            profile.get("_chat_id", ""),
+            after_epoch=eight_weeks_ago.timestamp(),
+            per_page=100,
+            max_pages=2,
+        )
+    except Exception:
+        pass
+
+    # Build structured inputs
+    athlete, race = _build_inputs(profile, strava_activities)
+
+    # Compute paces from realistic goal (Brain 1 will refine, but we need zones for Brain 2)
+    paces = calculate_paces(profile)
+
+    methodology = _load_methodology()
+
+    # ── Brain 1: Planner (Opus) ──────────────────────────────
+    try:
+        planner_output = _run_planner_brain(athlete, race, "standard", today_str)
+    except Exception as e:
+        logger.error(f"Brain 1 (Planner) failed: {e}", exc_info=True)
+        raise
+
+    # Extract A/B/C goals from Brain 1
+    goals = planner_output.get("race_updates", {}).get("goals", {})
+    plan_summary = planner_output.get("summary", "")
+
+    # Use B-goal as the plan's working goal_time (realistic target)
+    b_goal = goals.get("B", profile.get("goal_time", "finish"))
+
+    # ── Brain 2: Session Builder (Sonnet) ────────────────────
+    try:
+        weeks = _run_session_builder_brain(
+            planner_output=planner_output,
+            athlete=athlete,
+            units=units,
+            paces=paces,
+            total_weeks=total_weeks,
+            methodology=methodology,
+            race_date_str=race_date_str,
+            race_day_of_week=race_day_of_week,
+        )
+    except Exception as e:
+        logger.error(f"Brain 2 (Session Builder) failed: {e}", exc_info=True)
+        raise
+
+    # ── Merge + assign dates ─────────────────────────────────
+    weeks = _assign_week_dates(weeks, plan_start)
+
+    plan = {
+        "race_date": race_date_str,
+        "race_distance": profile.get("race_distance", "marathon"),
+        "goal_time": b_goal,
+        "total_weeks": total_weeks,
+        "generated_at": today.isoformat(),
+        "goals": {
+            "A": goals.get("A", ""),
+            "B": goals.get("B", ""),
+            "C": goals.get("C", ""),
+        },
+        "planner_summary": plan_summary,
+        "weeks": weeks,
+    }
+
+    logger.info(f"Plan complete: {total_weeks} weeks, goals A={goals.get('A')} B={goals.get('B')} C={goals.get('C')}")
     return plan

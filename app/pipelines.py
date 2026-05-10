@@ -432,32 +432,47 @@ def daily_digest(chat_id: str) -> str | None:
 # ─────────────────────────────────────────────────────────────
 
 def _send_post_plan_goal_options(chat_id: str, profile: dict) -> None:
-    """After plan is delivered, show goal predictions so user can lock in a target."""
-    try:
-        # Use cached predictions from onboarding if available, else recalculate
-        predictions = profile.get("_goal_predictions") or plan_generator.predict_goal_times(profile)
-    except Exception as e:
-        logger.warning(f"Goal prediction failed for {chat_id}: {e}")
-        return
+    """After plan is delivered, show goal options so user can lock in a target.
+
+    Reads A/B/C goals from the saved plan (Brain 1 output).
+    Falls back to predict_goal_times() if Brain 1 didn't produce goals.
+    """
+    plan = user_store.get_plan(chat_id)
+    goals = plan.get("goals", {}) if plan else {}
+    planner_summary = (plan.get("planner_summary", "") or "") if plan else ""
+
+    con = goals.get("C", "")
+    rea = goals.get("B", "")
+    agg = goals.get("A", "")
+
+    # Fallback: Brain 1 didn't produce goals — use predict_goal_times()
+    if not (con and rea and agg):
+        try:
+            predictions = plan_generator.predict_goal_times(profile)
+        except Exception as e:
+            logger.warning(f"Goal prediction fallback failed for {chat_id}: {e}")
+            return
+        con = predictions["conservative"]
+        rea = predictions["realistic"]
+        agg = predictions["aggressive"]
+        planner_summary = f"Based on {predictions.get('rationale', 'your training data')}."
 
     dist_label = profile.get("race_distance", "marathon").replace("_", " ").title()
-    rationale = predictions.get("rationale", "your training data")
-    con, rea, agg = predictions["conservative"], predictions["realistic"], predictions["aggressive"]
 
     def _fmt(t):
         parts = t.split(":")
         return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else t
 
+    summary_line = f"\n\n_{planner_summary}_" if planner_summary else ""
     msg = (
-        f"Now — what's your goal for the {dist_label}?\n\n"
-        f"Based on {rationale}:\n\n"
+        f"*What's your goal for the {dist_label}?*{summary_line}\n\n"
         f"🟢 *Conservative*  {_fmt(con)}\n"
         f"    High probability, solid race\n\n"
         f"🎯 *Realistic*  {_fmt(rea)}\n"
         f"    Achievable with consistent training\n\n"
         f"🔥 *Aggressive*  {_fmt(agg)}\n"
         f"    Possible if everything clicks\n\n"
-        f"Your plan is already built around the realistic target. "
+        f"Your plan is built around the Realistic target. "
         f"Tapping a goal locks in your training paces."
     )
     keyboard = [
@@ -492,19 +507,26 @@ def generate_and_send_plan(chat_id: str) -> None:
         except Exception:
             pass
 
+        # Inject chat_id so generate_plan() can fetch Strava history
+        profile["_chat_id"] = chat_id
         plan = plan_generator.generate_plan(profile)
         user_store.save_plan(chat_id, plan)
 
-        # Ensure paces are saved to profile
-        if not profile.get("paces"):
-            paces = plan_generator.calculate_paces(profile)
-            if paces:
-                user_store.update_profile(chat_id, {"paces": paces})
+        # Save A/B/C goals and update profile goal_time to Brain 1's B-goal
+        plan_goals = plan.get("goals", {})
+        b_goal = plan_goals.get("B") or plan.get("goal_time")
+        if b_goal:
+            user_store.update_profile(chat_id, {"goal_time": b_goal})
+            profile["goal_time"] = b_goal
+
+        # Ensure paces are saved to profile (based on B-goal)
+        paces = plan_generator.calculate_paces(profile)
+        if paces:
+            user_store.update_profile(chat_id, {"paces": paces})
 
         weeks = plan.get("total_weeks", len(plan.get("weeks", [])))
         race_name = profile.get("race_name", "your race")
         race_date = profile.get("race_date", "TBD")
-        goal = profile.get("goal_time", "finish")
         dist = profile.get("race_distance", "").replace("_", " ").title()
 
         week1 = plan["weeks"][0] if plan.get("weeks") else {}
@@ -518,10 +540,10 @@ def generate_and_send_plan(chat_id: str) -> None:
         week1_text = "\n".join(week1_lines)
 
         message = (
-            f"Your {weeks}-week plan is ready!\n\n"
-            f"Race: {race_name} — {dist} on {race_date}\n\n"
-            f"Week 1:\n{week1_text}\n\n"
-            f"Type /plan to see any week, or just chat with me about your training. "
+            f"✅ Your *{weeks}-week plan* is ready!\n\n"
+            f"*{race_name}* — {dist} on {race_date}\n\n"
+            f"*Week 1:*\n{week1_text}\n\n"
+            f"Use /plan to view any week. Chat with me anytime about your training.\n"
             f"I'll reach out after every Strava activity and every Sunday evening with a weekly report."
         )
         telegram_client.send_message(chat_id, message)
