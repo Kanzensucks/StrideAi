@@ -168,7 +168,7 @@ def _get_week_load(chat_id: str, week_start: datetime) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
-# PIPELINE 0: CHATBOT
+# PIPELINE 0: CHATBOT — agent loop with tool use
 # ─────────────────────────────────────────────────────────────
 
 PROGRESS_KEYWORDS = [
@@ -176,13 +176,227 @@ PROGRESS_KEYWORDS = [
     "show chart", "show graph", "training chart", "weekly chart", "training load",
 ]
 
+# Tools Claude can call during chat — each wraps an existing data function
+CHAT_TOOLS = [
+    {
+        "name": "get_todays_session",
+        "description": "Get the athlete's planned training session for today from their plan.",
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_current_week",
+        "description": (
+            "Get the full current training week — all sessions with type, "
+            "distance, pace, and notes."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "get_plan_week",
+        "description": "Get a specific week from the training plan by week number.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "week_number": {
+                    "type": "integer",
+                    "description": "Week number (1 = first week of plan)",
+                }
+            },
+            "required": ["week_number"],
+        },
+    },
+    {
+        "name": "get_recent_runs",
+        "description": (
+            "Get the athlete's recent Strava runs. Use this to check training load, "
+            "missed sessions, actual paces, or recovery status."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "How many days back to fetch (7, 14, or 28). Default 14.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_weekly_load",
+        "description": (
+            "Get week-by-week training volume (km) for the last N weeks. "
+            "Use this to identify trends, overtraining, or undertraining."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "weeks": {
+                    "type": "integer",
+                    "description": "Number of weeks to look back (max 8). Default 4.",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_training_paces",
+        "description": (
+            "Get the athlete's current training pace zones — "
+            "easy, threshold, intervals, and goal race pace."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+]
+
+
+def _execute_chat_tool(chat_id: str, name: str, inputs: dict) -> str:
+    """Execute a tool call from the agent loop and return a plain-text result."""
+    try:
+        if name == "get_todays_session":
+            session = user_store.get_todays_session(chat_id)
+            if not session or session.get("type") == "rest":
+                return "Today is a rest day — no session planned."
+            dist = session.get("distance_km") or session.get("distance_mi")
+            dist_str = f"{dist} {user_store.get_profile(chat_id).get('units','km')}" if dist else ""
+            pace_str = f" @ {session['pace']}" if session.get("pace") else ""
+            notes = session.get("notes", "")
+            return (
+                f"Today: {session['day']} — {session['type'].replace('_',' ').title()} "
+                f"{dist_str}{pace_str}\n{notes}"
+            ).strip()
+
+        elif name == "get_current_week":
+            week = user_store.get_current_week_plan(chat_id)
+            if not week:
+                return "No current week plan found."
+            profile = user_store.get_profile(chat_id)
+            units = profile.get("units", "km")
+            lines = [
+                f"Week {week['week']} · {week.get('phase','').title()} · "
+                f"{week.get('target_volume_km') or week.get('target_volume_mi', '?')}"
+                f"{units}"
+            ]
+            for s in week.get("sessions", []):
+                dist = s.get("distance_km") or s.get("distance_mi")
+                dist_str = f" {dist}{units}" if dist else ""
+                pace_str = f" @ {s['pace']}" if s.get("pace") else ""
+                lines.append(
+                    f"{s['day']} — {s['type'].replace('_',' ').title()}"
+                    f"{dist_str}{pace_str}"
+                )
+            return "\n".join(lines)
+
+        elif name == "get_plan_week":
+            wn = int(inputs.get("week_number", 1))
+            week = user_store.get_week_plan(chat_id, wn)
+            if not week:
+                return f"Week {wn} not found in plan."
+            profile = user_store.get_profile(chat_id)
+            units = profile.get("units", "km")
+            lines = [
+                f"Week {week['week']} · {week.get('phase','').title()} · "
+                f"{week.get('target_volume_km') or week.get('target_volume_mi','?')}"
+                f"{units}"
+            ]
+            for s in week.get("sessions", []):
+                dist = s.get("distance_km") or s.get("distance_mi")
+                dist_str = f" {dist}{units}" if dist else ""
+                pace_str = f" @ {s['pace']}" if s.get("pace") else ""
+                lines.append(
+                    f"{s['day']} — {s['type'].replace('_',' ').title()}"
+                    f"{dist_str}{pace_str}"
+                )
+            return "\n".join(lines)
+
+        elif name == "get_recent_runs":
+            days = int(inputs.get("days", 14))
+            days = min(days, 28)
+            after = datetime.now() - timedelta(days=days)
+            activities = strava_client.get_activities(
+                chat_id, after_epoch=after.timestamp(), per_page=50, max_pages=1
+            )
+            if not activities:
+                return f"No Strava runs found in the last {days} days."
+            profile = user_store.get_profile(chat_id)
+            units = profile.get("units", "km")
+            runs = [
+                a for a in activities
+                if "run" in (a.get("sport_type") or a.get("type") or "").lower()
+            ]
+            if not runs:
+                return f"No runs logged in the last {days} days."
+            lines = [f"Last {days} days — {len(runs)} run(s):"]
+            for a in sorted(runs, key=lambda x: x["start_date_local"])[-10:]:
+                lines.append(strava_client.format_activity_line(a, units))
+            return "\n".join(lines)
+
+        elif name == "get_weekly_load":
+            weeks = min(int(inputs.get("weeks", 4)), 8)
+            after = datetime.now() - timedelta(weeks=weeks)
+            activities = strava_client.get_activities(
+                chat_id, after_epoch=after.timestamp(), per_page=200, max_pages=2
+            )
+            if not activities:
+                return f"No Strava activities found in the last {weeks} weeks."
+            profile = user_store.get_profile(chat_id)
+            units = profile.get("units", "km")
+            # Group by ISO week
+            from collections import defaultdict
+            week_buckets: dict = defaultdict(float)
+            week_counts: dict = defaultdict(int)
+            for a in activities:
+                if "run" not in (a.get("sport_type") or a.get("type") or "").lower():
+                    continue
+                try:
+                    from datetime import datetime as _dt
+                    d = _dt.strptime(a["start_date_local"][:10], "%Y-%m-%d")
+                    wk = d.strftime("%Y-W%W")
+                    label = d.strftime("Wk %b %-d")
+                except Exception:
+                    continue
+                dist_km = (a.get("distance") or 0) / 1000
+                week_buckets[wk] += dist_km
+                week_counts[wk] += 1
+            if not week_buckets:
+                return "No run data found."
+            lines = [f"Weekly run volume (last {weeks} weeks):"]
+            for wk in sorted(week_buckets.keys()):
+                km = week_buckets[wk]
+                cnt = week_counts[wk]
+                display = round(km * 0.621371, 1) if units == "mi" else round(km, 1)
+                lines.append(f"  {wk}: {display}{units} ({cnt} run{'s' if cnt != 1 else ''})")
+            return "\n".join(lines)
+
+        elif name == "get_training_paces":
+            profile = user_store.get_profile(chat_id)
+            paces = profile.get("paces", {})
+            if not paces:
+                return "No pace zones set yet. Use /pace or set a goal time."
+            lines = ["Current training paces:"]
+            for zone, pace in paces.items():
+                lines.append(f"  {zone.replace('_', ' ').title()}: {pace}")
+            return "\n".join(lines)
+
+        else:
+            return f"Unknown tool: {name}"
+
+    except Exception as e:
+        logger.warning(f"Tool {name} failed for {chat_id}: {e}")
+        return f"Could not retrieve {name.replace('_', ' ')} right now."
+
 
 def handle_chat(chat_id: str, athlete_message: str, msg_timestamp=None) -> None:
-    """Conversational coach — full history, live Strava context, plan awareness."""
+    """Conversational coach — agent loop with tool use.
+
+    Claude decides which tools to call based on the question.
+    Each tool call is logged so the agent pattern is visible in Railway logs.
+    """
     logger.info(f"Pipeline 0: Chat [{chat_id}] — {athlete_message[:60]}...")
 
     telegram_client.send_typing(chat_id)
 
+    # Plan adjuster intercepts direct modification requests (unchanged)
     adjustment_msg = plan_adjuster.apply_chat_adjustment(chat_id, athlete_message)
     if adjustment_msg:
         storage.append_chat_message(chat_id, "user", athlete_message)
@@ -192,6 +406,7 @@ def handle_chat(chat_id: str, athlete_message: str, msg_timestamp=None) -> None:
 
     storage.append_chat_message(chat_id, "user", athlete_message)
 
+    # Progress chart shortcut (unchanged)
     if any(kw in athlete_message.lower() for kw in PROGRESS_KEYWORDS):
         try:
             from app.utils import charts
@@ -204,21 +419,15 @@ def handle_chat(chat_id: str, athlete_message: str, msg_timestamp=None) -> None:
             logger.error(f"Chart failed for {chat_id}: {e}")
 
     profile = user_store.get_profile(chat_id)
-    recent_activities = _get_recent_activities_text(chat_id)
-    weekly_report = user_store.get_last_weekly_report(chat_id)
-    weeks_left = user_store.weeks_to_race(chat_id)
-
-    system_prompt = coach_prompts.build_chat_system_prompt(profile)
-    live_context = coach_prompts.build_chat_context(
-        profile, recent_activities, weekly_report, weeks_left, msg_timestamp=msg_timestamp
+    memory_text = user_store.get_memory_text(chat_id)
+    system_prompt = coach_prompts.build_chat_agent_system_prompt(
+        profile, memory_text, msg_timestamp
     )
 
-    memory_text = user_store.get_memory_text(chat_id)
-    if memory_text:
-        live_context += f"\n\nPERSISTENT COACH MEMORY:\n{memory_text}"
+    api_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    messages = storage.get_claude_messages(chat_id)
 
-    full_system = system_prompt + "\n\n" + live_context
-
+    # Keep typing indicator alive during the agent loop
     stop_typing = threading.Event()
 
     def _keep_typing():
@@ -229,11 +438,56 @@ def handle_chat(chat_id: str, athlete_message: str, msg_timestamp=None) -> None:
     typing_thread = threading.Thread(target=_keep_typing, daemon=True)
     typing_thread.start()
 
+    reply = ""
     try:
-        messages = storage.get_claude_messages(chat_id)
-        reply = _call_claude_conversation(full_system, messages, MODEL_HAIKU)
+        # ── Agent loop ───────────────────────────────────────────
+        loop_messages = list(messages)  # don't mutate storage copy
+        max_iterations = 6  # safety cap on tool rounds
+        for _ in range(max_iterations):
+            response = api_client.messages.create(
+                model=MODEL_SONNET,
+                max_tokens=1024,
+                system=system_prompt,
+                tools=CHAT_TOOLS,
+                messages=loop_messages,
+            )
+
+            if response.stop_reason == "end_turn":
+                # Claude finished — extract text reply
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        reply = block.text
+                        break
+                break
+
+            if response.stop_reason == "tool_use":
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        logger.info(
+                            f"[agent] tool={block.name} input={block.input} chat={chat_id}"
+                        )
+                        result = _execute_chat_tool(chat_id, block.name, block.input)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
+                # Append this assistant turn + tool results, loop again
+                loop_messages = loop_messages + [
+                    {"role": "assistant", "content": response.content},
+                    {"role": "user", "content": tool_results},
+                ]
+                continue
+
+            # Unexpected stop reason — break
+            break
+
     finally:
         stop_typing.set()
+
+    if not reply:
+        reply = "Something went wrong — try again in a moment."
 
     storage.append_chat_message(chat_id, "assistant", reply)
     telegram_client.send_message(chat_id, reply)

@@ -105,8 +105,65 @@ Rest day = rest. No "light jog" on rest days."""
 
 
 # ─────────────────────────────────────────────────────────────
-# PIPELINE 0: CHATBOT (conversational coach)
+# PIPELINE 0: CHATBOT — agent version (tool use)
 # ─────────────────────────────────────────────────────────────
+
+def build_chat_agent_system_prompt(profile: dict, memory_text: str = "",
+                                    msg_timestamp=None) -> str:
+    """Lean system prompt for the agent loop.
+
+    Only includes athlete identity — everything else (plan, Strava, paces)
+    is fetched on demand via tools that Claude calls itself.
+    """
+    import pytz
+    from datetime import datetime
+
+    name = profile.get("first_name", "Athlete")
+    race_name = profile.get("race_name", "your goal race")
+    race_date = profile.get("race_date", "TBD")
+    race_dist = profile.get("race_distance", "race").replace("_", " ").title()
+    goal = profile.get("goal_time", "finish")
+    experience = profile.get("experience_level", "intermediate")
+    days_per_week = profile.get("days_per_week", 4)
+    long_run_day = profile.get("long_run_day", "Sunday")
+    injury_notes = profile.get("injury_notes", "")
+    units = profile.get("units", "km")
+
+    # Weeks to race
+    weeks_to_race = "unknown"
+    if race_date and race_date != "TBD":
+        try:
+            tz_name = profile.get("timezone", "UTC")
+            tz = pytz.timezone(tz_name)
+            if msg_timestamp:
+                now = datetime.fromtimestamp(msg_timestamp, tz=tz)
+            else:
+                now = datetime.now(tz)
+            race_dt = datetime.strptime(race_date, "%Y-%m-%d")
+            weeks_to_race = max(0, (race_dt - now.replace(tzinfo=None)).days // 7)
+        except Exception:
+            pass
+
+    injury_line = f"\nInjury notes: {injury_notes}" if injury_notes and injury_notes.lower() not in ("none", "none reported", "no") else ""
+    memory_block = f"\n\nCoach memory (persistent notes about this athlete):\n{memory_text}" if memory_text else ""
+
+    return f"""You are StrideAI, a personal running coach for {name}.
+
+Race: {race_name} ({race_dist}) on {race_date} — {weeks_to_race} weeks away.
+Current goal: {goal}.
+Experience: {experience}. Training {days_per_week} days/week. Long run: {long_run_day}. Units: {units}.{injury_line}
+
+You have tools to look up their plan, Strava history, and pace zones.
+Use tools when you need specific data to answer accurately. Don't fetch data you don't need.
+
+Rules:
+- Be direct and specific. Use actual numbers from tool results.
+- No empty encouragement. No markdown. Plain text only (this is Telegram).
+- If asked about today's session, use get_todays_session.
+- If asked about load, fatigue, missed runs, or trends, use get_recent_runs or get_weekly_load.
+- If asked about paces or zones, use get_training_paces.
+- Simple conversational replies need no tools.{memory_block}"""
+
 
 def build_chat_system_prompt(profile: dict) -> str:
     """Build the chatbot system prompt for a specific user."""
