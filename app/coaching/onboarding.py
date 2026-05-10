@@ -494,12 +494,24 @@ def _parse_prs(text: str) -> dict:
     prs = {}
     text_lower = text.lower()
 
-    def _extract_time(s: str) -> str | None:
-        """Return first parseable time from string s, in h:mm:ss or mm:ss form."""
-        # Colon format: 1:54:50 or 1:54 or 22:30
-        m = re.search(r'\b(\d{1,2}:\d{2}(?::\d{2})?)\b', s)
+    def _extract_time(s: str, long_distance: bool = False) -> str | None:
+        """Return first parseable time from string s, normalised to h:mm:ss or mm:ss.
+
+        long_distance=True: a 2-part colon time (e.g. "1:54") is h:mm → "1:54:00"
+        long_distance=False: a 2-part colon time is mm:ss → leave as "22:30"
+        """
+        # Full h:mm:ss — always unambiguous
+        m = re.search(r'\b(\d{1,2}:\d{2}:\d{2})\b', s)
         if m:
             return m.group(1)
+        # 2-part colon: "1:54" or "22:30"
+        m = re.search(r'\b(\d{1,2}):(\d{2})\b', s)
+        if m:
+            t = m.group(0)
+            if long_distance:
+                # Treat as h:mm → append :00 so _time_str_to_seconds reads it as hours
+                return t + ":00"
+            return t
         # Word format: "1 hour 54 min", "1h 54m", "1h54m"
         m = re.search(
             r'(\d+)\s*h(?:ours?|r)?\s*(\d+)\s*m(?:ins?|inutes?)?', s
@@ -514,17 +526,17 @@ def _parse_prs(text: str) -> dict:
         return None
 
     dist_patterns = [
-        (r'\b5\s*k\b', "5k"),
-        (r'\b10\s*k\b', "10k"),
-        (r'\b(?:hm|half(?:\s*marathon)?)\b', "half_marathon"),
-        (r'\b(?:fm|full(?:\s*marathon)?|(?<!\w)marathon)\b', "marathon"),
+        (r'\b5\s*k\b', "5k", False),
+        (r'\b10\s*k\b', "10k", False),
+        (r'\b(?:hm|half(?:\s*marathon)?)\b', "half_marathon", True),
+        (r'\b(?:fm|full(?:\s*marathon)?|(?<!\w)marathon)\b', "marathon", True),
     ]
 
-    for dist_re, key in dist_patterns:
+    for dist_re, key, is_long in dist_patterns:
         m = re.search(dist_re, text_lower)
         if m:
             # Look for a time in the ~50 chars after the distance keyword
-            t = _extract_time(text_lower[m.end(): m.end() + 50])
+            t = _extract_time(text_lower[m.end(): m.end() + 50], long_distance=is_long)
             if t:
                 prs[key] = t
 

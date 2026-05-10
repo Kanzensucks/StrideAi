@@ -61,6 +61,18 @@ def _time_str_to_seconds(time_str: str) -> int:
         return 0
 
 
+def _normalise_pr_time(time_str: str, dist_key: str) -> str:
+    """Ensure long-distance PRs stored as h:mm are treated as h:mm:ss.
+
+    Old entries stored "1:54" for a half marathon. _time_str_to_seconds reads
+    that as 1 min 54 sec (114s) instead of 1 hr 54 min (6840s).
+    Fix: append ':00' for half_marathon/marathon PRs that have only one colon.
+    """
+    if dist_key in ("half_marathon", "marathon") and time_str.count(":") == 1:
+        return time_str + ":00"
+    return time_str
+
+
 def _seconds_to_pace(seconds_per_km: float) -> str:
     """Convert seconds/km to mm:ss/km string."""
     s = int(seconds_per_km)
@@ -185,8 +197,11 @@ def predict_goal_times(profile: dict) -> dict:
     pr_source = None
     for pr_dist in ["half_marathon", "10k", "5k"]:
         if pr_dist in prs and pr_dist != distance:
-            pr_s = _time_str_to_seconds(prs[pr_dist])
-            if pr_s > 0:
+            raw = _normalise_pr_time(prs[pr_dist], pr_dist)
+            pr_s = _time_str_to_seconds(raw)
+            # Sanity check: marathon > 90 min, HM > 45 min, 10k > 20 min, 5k > 10 min
+            _min_seconds = {"half_marathon": 2700, "10k": 1200, "5k": 600}.get(pr_dist, 0)
+            if pr_s >= _min_seconds:
                 source_km = DISTANCE_KM[pr_dist]
                 predicted = int(pr_s * (target_km / source_km) ** 1.06)
                 if best_s is None or predicted < best_s:
@@ -323,8 +338,10 @@ def _build_inputs(profile: dict, strava_activities: list) -> tuple[dict, dict]:
     target_km = DISTANCE_KM.get(dist, 42.195)
     for pr_dist in ["half_marathon", "10k", "5k"]:
         if pr_dist in prs and pr_dist != dist:
-            pr_s = _time_str_to_seconds(prs[pr_dist])
-            if pr_s > 0:
+            raw = _normalise_pr_time(prs[pr_dist], pr_dist)
+            pr_s = _time_str_to_seconds(raw)
+            _min_s = {"half_marathon": 2700, "10k": 1200, "5k": 600}.get(pr_dist, 0)
+            if pr_s >= _min_s:
                 source_km = DISTANCE_KM[pr_dist]
                 predicted_s = int(pr_s * (target_km / source_km) ** 1.06)
                 riegel_estimate = _seconds_to_time_str(predicted_s)
@@ -591,6 +608,47 @@ def generate_plan(profile: dict) -> dict:
     # Extract A/B/C goals from Brain 1
     goals = planner_output.get("race_updates", {}).get("goals", {})
     plan_summary = planner_output.get("summary", "")
+
+    # ── Validate Brain 1 goals against Riegel floor ───────────
+    # Floor rule: C-goal MUST be faster (lower seconds) than current Riegel fitness.
+    # Brain 1 occasionally violates this. If it does, override with predict_goal_times().
+    riegel_floor_s = 0
+    prs = profile.get("prs", {})
+    dist_key = profile.get("race_distance", "marathon")
+    target_km_val = DISTANCE_KM.get(dist_key, 42.195)
+    for pr_dist in ["half_marathon", "10k", "5k"]:
+        if pr_dist in prs and pr_dist != dist_key:
+            raw = _normalise_pr_time(prs[pr_dist], pr_dist)
+            pr_s = _time_str_to_seconds(raw)
+            _min_s = {"half_marathon": 2700, "10k": 1200, "5k": 600}.get(pr_dist, 0)
+            if pr_s >= _min_s:
+                riegel_floor_s = int(pr_s * (target_km_val / DISTANCE_KM[pr_dist]) ** 1.06)
+                break
+
+    goals_valid = False
+    if goals.get("A") and goals.get("B") and goals.get("C"):
+        c_s = _time_str_to_seconds(goals["C"])
+        a_s = _time_str_to_seconds(goals["A"])
+        # Valid if: A < B < C (A fastest), and if we have a Riegel floor, C must beat it
+        b_s = _time_str_to_seconds(goals["B"])
+        ordering_ok = 0 < a_s < b_s < c_s
+        floor_ok = (riegel_floor_s == 0) or (c_s < riegel_floor_s)
+        goals_valid = ordering_ok and floor_ok
+
+    if not goals_valid:
+        logger.warning(
+            f"Brain 1 goals failed validation (A={goals.get('A')} B={goals.get('B')} "
+            f"C={goals.get('C')}, Riegel floor={_seconds_to_time_str(riegel_floor_s)}). "
+            f"Falling back to predict_goal_times()."
+        )
+        predictions = predict_goal_times(profile)
+        goals = {
+            "A": predictions["aggressive"],
+            "B": predictions["realistic"],
+            "C": predictions["conservative"],
+        }
+        if not plan_summary:
+            plan_summary = predictions.get("rationale", "")
 
     # Use B-goal as the plan's working goal_time (realistic target)
     b_goal = goals.get("B", profile.get("goal_time", "finish"))
