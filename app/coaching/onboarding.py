@@ -12,8 +12,7 @@ Steps (persisted in onboarding_state.json):
   8  → recent PRs
   9  → cross-training prefs
   10 → injury history
-  11 → goal prediction (3 options, after ALL data collected)
-  12 → waiting for Strava (if not already connected) / finalise
+  11 → waiting for Strava / finalise (goal shown AFTER plan is generated)
 """
 
 import logging
@@ -126,12 +125,11 @@ STEPS = {
         "field": "injury_notes",
         "type": "text",
     },
-    # Step 11 = goal prediction (built dynamically, after all data collected)
 }
 
 # Display step numbers for progress indicator (skips step 3 Strava side-step)
-_DISPLAY_STEP = {0: 1, 1: 2, 2: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11}
-TOTAL_STEPS = 11
+_DISPLAY_STEP = {0: 1, 1: 2, 2: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10}
+TOTAL_STEPS = 10
 
 
 # ─── Main handler ─────────────────────────────────────────────
@@ -146,8 +144,8 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
     step = state.get("step", 0)
     data = state.get("data", {})
 
-    # Step 12 = waiting for Strava connect (all questions answered)
-    if step >= 12:
+    # Step 11 = waiting for Strava connect (all questions answered)
+    if step >= 11:
         return False
 
     # Step 3 = Strava connect — waiting for user to press Continue
@@ -159,7 +157,7 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
         return True
 
     step_def = STEPS.get(step)
-    if step_def is None and step != 9:
+    if step_def is None:
         return False
 
     # Process the incoming answer
@@ -231,15 +229,6 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
     elif step == 10:
         data["injury_notes"] = answer if answer.lower() != "none" else "none reported"
 
-    elif step == 11:
-        # Goal prediction — expect "goaltime:3:38:00" callback
-        if answer.startswith("goaltime:"):
-            data["goal_time"] = answer.split(":", 1)[1]
-        else:
-            # User typed instead of tapping — re-show buttons
-            _send_goal_prediction(chat_id, data)
-            return True
-
     # Advance step
     step += 1
     state["step"] = step
@@ -250,12 +239,8 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
         # Show Strava link with Continue button — stay on step 3 until user taps it
         _send_strava_early(chat_id)
 
-    elif step == 11:
-        # All data collected — now show goal prediction
-        _send_goal_prediction(chat_id, data)
-
-    elif step >= 12:
-        # All questions answered
+    elif step >= 11:
+        # All questions answered — generate plan (goal prediction shown after plan)
         _finalise_or_wait(chat_id, data)
         return False
 
@@ -280,9 +265,7 @@ def resume_onboarding(chat_id: str) -> None:
 
     if step == 3:
         _send_strava_early(chat_id)
-    elif step == 11:
-        _send_goal_prediction(chat_id, data)
-    elif step >= 12:
+    elif step >= 11:
         oauth_url = f"https://{PUBLIC_DOMAIN}/strava/connect?chat_id={chat_id}"
         telegram_client.send_message(
             chat_id,
@@ -372,7 +355,7 @@ def _finalise_or_wait(chat_id: str, data: dict) -> None:
         _finalise_onboarding(chat_id, data)
     else:
         # Save state so Strava callback can complete it
-        user_store.save_onboarding_state(chat_id, {"step": 12, "data": data})
+        user_store.save_onboarding_state(chat_id, {"step": 11, "data": data})
         oauth_url = f"https://{PUBLIC_DOMAIN}/strava/connect?chat_id={chat_id}"
         telegram_client.send_message(
             chat_id,
@@ -395,6 +378,16 @@ def _finalise_onboarding(chat_id: str, data: dict) -> None:
     except Exception:
         tz = "UTC"
     data.setdefault("timezone", tz)
+
+    # Predict goal time from fitness data — used for plan generation
+    # User will confirm/adjust their goal after the plan is shown
+    try:
+        predictions = plan_generator.predict_goal_times(data)
+        data["goal_time"] = predictions.get("realistic", "finish")
+        data["_goal_predictions"] = predictions  # shown post-plan
+    except Exception as e:
+        logger.warning(f"Goal prediction failed for {chat_id}: {e}")
+        data.setdefault("goal_time", "finish")
 
     user_store.save_profile(chat_id, data)
 

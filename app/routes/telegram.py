@@ -68,6 +68,10 @@ def _handle_callback(callback: dict) -> None:
         onboarding.handle_onboarding_message(chat_id, "", callback_data=data)
         return
 
+    if data.startswith("goaltime:"):
+        _handle_goaltime_callback(chat_id, data)
+        return
+
     if data.startswith("setrace_dist:"):
         dist = data.split(":", 1)[1]
         _handle_setrace_step(chat_id, dist, is_callback=True)
@@ -462,6 +466,33 @@ def _send_help(chat_id: str) -> None:
         "request adjustments, or tell me how you're feeling."
     )
     telegram_client.send_message(chat_id, msg)
+
+
+def _handle_goaltime_callback(chat_id: str, data: str) -> None:
+    """Handle goal selection shown after plan generation."""
+    from app.coaching import plan_generator
+
+    goal = data.split(":", 1)[1]
+    profile = user_store.update_profile(chat_id, {"goal_time": goal})
+
+    try:
+        paces = plan_generator.calculate_paces(profile)
+        if paces:
+            user_store.update_profile(chat_id, {"paces": paces})
+    except Exception:
+        pass
+
+    def _fmt(t):
+        parts = t.split(":")
+        return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else t
+
+    telegram_client.send_message(
+        chat_id,
+        f"Goal locked in: *{_fmt(goal)}* 🎯\n\n"
+        f"Training paces updated — type /pace to see your zones.\n\n"
+        f"Let's get to work."
+    )
+    logger.info(f"Goal time set to {goal} for {chat_id}")
 
 
 def _handle_goalreview_callback(chat_id: str, data: str) -> None:

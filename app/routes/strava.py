@@ -155,7 +155,7 @@ def callback():
 
         # Mid-onboarding — check if all questions are answered
         state = user_store.get_onboarding_state(chat_id)
-        if state.get("step", 0) >= 12:
+        if state.get("step", 0) >= 11:
             # All questions done, just needed Strava — generate plan now
             onboarding.complete_onboarding_after_strava(chat_id)
             logger.info(f"Strava callback finalised onboarding for {chat_id}")

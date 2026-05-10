@@ -431,6 +431,43 @@ def daily_digest(chat_id: str) -> str | None:
 # PIPELINE 4: PLAN GENERATION (post-onboarding)
 # ─────────────────────────────────────────────────────────────
 
+def _send_post_plan_goal_options(chat_id: str, profile: dict) -> None:
+    """After plan is delivered, show goal predictions so user can lock in a target."""
+    try:
+        # Use cached predictions from onboarding if available, else recalculate
+        predictions = profile.get("_goal_predictions") or plan_generator.predict_goal_times(profile)
+    except Exception as e:
+        logger.warning(f"Goal prediction failed for {chat_id}: {e}")
+        return
+
+    dist_label = profile.get("race_distance", "marathon").replace("_", " ").title()
+    rationale = predictions.get("rationale", "your training data")
+    con, rea, agg = predictions["conservative"], predictions["realistic"], predictions["aggressive"]
+
+    def _fmt(t):
+        parts = t.split(":")
+        return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else t
+
+    msg = (
+        f"Now — what's your goal for the {dist_label}?\n\n"
+        f"Based on {rationale}:\n\n"
+        f"🟢 *Conservative*  {_fmt(con)}\n"
+        f"    High probability, solid race\n\n"
+        f"🎯 *Realistic*  {_fmt(rea)}\n"
+        f"    Achievable with consistent training\n\n"
+        f"🔥 *Aggressive*  {_fmt(agg)}\n"
+        f"    Possible if everything clicks\n\n"
+        f"Your plan is already built around the realistic target. "
+        f"Tapping a goal locks in your training paces."
+    )
+    keyboard = [
+        [{"text": f"🟢 Conservative  {_fmt(con)}", "callback_data": f"goaltime:{con}"}],
+        [{"text": f"🎯 Realistic  {_fmt(rea)}", "callback_data": f"goaltime:{rea}"}],
+        [{"text": f"🔥 Aggressive  {_fmt(agg)}", "callback_data": f"goaltime:{agg}"}],
+    ]
+    telegram_client.send_message_with_keyboard(chat_id, msg, keyboard)
+
+
 def generate_and_send_plan(chat_id: str) -> None:
     """Generate full plan and send welcome summary to user."""
     logger.info(f"Pipeline 4: Generating plan [{chat_id}]")
@@ -482,14 +519,15 @@ def generate_and_send_plan(chat_id: str) -> None:
 
         message = (
             f"Your {weeks}-week plan is ready!\n\n"
-            f"Goal: {dist} — {goal} on {race_date}\n"
-            f"Race: {race_name}\n\n"
+            f"Race: {race_name} — {dist} on {race_date}\n\n"
             f"Week 1:\n{week1_text}\n\n"
             f"Type /plan to see any week, or just chat with me about your training. "
-            f"I'll reach out after every Strava activity and every Sunday evening with a weekly report.\n\n"
-            f"Let's get to work."
+            f"I'll reach out after every Strava activity and every Sunday evening with a weekly report."
         )
         telegram_client.send_message(chat_id, message)
+
+        # Show goal prediction buttons so user can confirm/adjust their target
+        _send_post_plan_goal_options(chat_id, profile)
 
     except Exception as e:
         logger.error(f"Plan generation failed for {chat_id}: {e}", exc_info=True)
