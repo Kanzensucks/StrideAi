@@ -130,12 +130,38 @@ def _estimate_from_volume(weekly_km: float, longest_km: float,
     return base_s
 
 
+def _training_improvement(weeks_to_race: int, experience: str, weekly_km: float) -> float:
+    """Estimate how much faster (as a fraction) a runner can get over the training block.
+
+    Returns a value like 0.05 meaning "5% faster by race day".
+    Based on weeks available, experience level, and current volume headroom.
+    """
+    # More weeks = more adaptation time (cap at 20 weeks)
+    week_factor = min(weeks_to_race, 20) / 20.0
+
+    # Experience: beginners have more room to improve, advanced less
+    base_improvement = {"beginner": 0.09, "intermediate": 0.06, "advanced": 0.03}.get(
+        experience, 0.06
+    )
+
+    # Volume headroom: if currently running <50km, more aerobic gains available
+    vol_headroom = max(0.0, min(1.0, (55 - weekly_km) / 55))
+
+    improvement = base_improvement * week_factor * (1 + vol_headroom * 0.4)
+    return round(min(improvement, 0.10), 4)  # cap at 10%
+
+
 def predict_goal_times(profile: dict) -> dict:
-    """Predict race goal times from fitness data.
+    """Predict race goal times from fitness data, accounting for training ahead.
 
     Priority: PRs (Riegel formula) > volume-based estimate.
+    Applies a training improvement factor so goals reflect race-day fitness,
+    not just current fitness.
+
     Returns dict with conservative / realistic / aggressive / rationale.
     """
+    from datetime import datetime
+
     distance = profile.get("race_distance", "marathon")
     weekly_km = float(profile.get("current_weekly_km", 30))
     longest_km = float(profile.get("longest_recent_run_km", 15))
@@ -143,7 +169,17 @@ def predict_goal_times(profile: dict) -> dict:
     prs = profile.get("prs", {})
     target_km = DISTANCE_KM.get(distance, 42.195)
 
-    # Try PR-based prediction first (most accurate)
+    # Weeks until race (used to scale improvement potential)
+    weeks_to_race = 12  # sensible default
+    race_date_str = profile.get("race_date", "")
+    if race_date_str:
+        try:
+            race_dt = datetime.strptime(race_date_str, "%Y-%m-%d")
+            weeks_to_race = max(0, (race_dt - datetime.now()).days // 7)
+        except ValueError:
+            pass
+
+    # Try PR-based prediction first (most accurate current-fitness baseline)
     best_s = None
     pr_source = None
     for pr_dist in ["half_marathon", "10k", "5k"]:
@@ -157,16 +193,26 @@ def predict_goal_times(profile: dict) -> dict:
                     pr_source = pr_dist.replace("_", " ")
 
     if best_s:
-        realistic_s = best_s
-        rationale = f"extrapolated from your {pr_source} PR"
+        current_fitness_s = best_s
+        rationale = f"your {pr_source} PR + {weeks_to_race} weeks of training"
     else:
-        realistic_s = _estimate_from_volume(weekly_km, longest_km, experience, distance)
-        rationale = f"{int(weekly_km)}km/week training + {int(longest_km)}km long run"
+        current_fitness_s = _estimate_from_volume(weekly_km, longest_km, experience, distance)
+        rationale = f"{int(weekly_km)}km/week + {int(longest_km)}km long run + {weeks_to_race} weeks to train"
+
+    # Apply training improvement: realistic = race-day fitness after a full block
+    improvement = _training_improvement(weeks_to_race, experience, weekly_km)
+    realistic_s = int(current_fitness_s * (1 - improvement))
+
+    # Conservative = modest improvement (half the realistic gain), low-risk target
+    conservative_s = int(current_fitness_s * (1 - improvement * 0.4))
+
+    # Aggressive = 1.5× the realistic gain, requires everything to click
+    aggressive_s = int(current_fitness_s * (1 - improvement * 1.6))
 
     return {
-        "conservative": _seconds_to_time_str(int(realistic_s * 1.06)),
+        "conservative": _seconds_to_time_str(conservative_s),
         "realistic": _seconds_to_time_str(realistic_s),
-        "aggressive": _seconds_to_time_str(int(realistic_s * 0.94)),
+        "aggressive": _seconds_to_time_str(aggressive_s),
         "rationale": rationale,
     }
 
