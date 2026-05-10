@@ -404,6 +404,8 @@ def _call_session_builder_chunk(
     paces_text: str,
     race_date_str: str,
     race_day_of_week: str,
+    long_run_day: str,
+    days_per_week: int,
     total_plan_weeks: int,
 ) -> list:
     """Run one Brain 2 chunk call for a slice of weeks.
@@ -417,10 +419,13 @@ def _call_session_builder_chunk(
     last_week = week_chunk[-1]["week"]
 
     user_message = (
-        f"Fill in sessions for weeks {first_week}–{last_week} "
-        f"(out of a {total_plan_weeks}-week plan total).\n"
-        f"Race day: {race_day_of_week}, race date: {race_date_str}\n"
-        f"Training pace zones:\n{paces_text}\n\n"
+        f"Fill sessions for weeks {first_week}–{last_week} "
+        f"(plan is {total_plan_weeks} weeks total).\n"
+        f"LONG RUN DAY: {long_run_day} — place the long run on {long_run_day} every week.\n"
+        f"Training days per week: {days_per_week} (remaining days = rest).\n"
+        f"Race day of week: {race_day_of_week}, race date: {race_date_str} "
+        f"(race session only in final week week {total_plan_weeks}).\n"
+        f"Pace zones:\n{paces_text}\n\n"
         f"Week structure:\n{json.dumps(week_chunk, indent=2)}\n\n"
         f"Return ONLY a valid JSON array of exactly {n} week objects with sessions[].\n"
         f"No prose. No fences. Start with ["
@@ -513,6 +518,8 @@ def _run_session_builder_brain(
             paces_text=paces_text,
             race_date_str=race_date_str,
             race_day_of_week=race_day_of_week,
+            long_run_day=long_run_day,
+            days_per_week=days_per_week,
             total_plan_weeks=total_weeks,
         )
         all_weeks.extend(chunk_weeks)
