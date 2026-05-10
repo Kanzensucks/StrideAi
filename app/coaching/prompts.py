@@ -801,6 +801,33 @@ Cross-training:     {cross_training}
 Injury notes:       {injury_notes}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WEEKLY SESSION SEQUENCING (critical)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The order of sessions within the week matters as much as the sessions themselves.
+
+HARD RULES — breaking any of these produces a bad plan:
+1. The day BEFORE {long_run_day} must be easy or rest. Never threshold/intervals/race_pace.
+2. Two hard sessions (threshold, intervals, race_pace) must be separated by at least
+   one easy or rest day. Never back-to-back.
+3. The long run itself is the hardest session of the week — treat the day before as
+   mandatory buffer.
+
+SEQUENCING PATTERN to follow (adapt days to fit {long_run_day}):
+- Place hard quality session(s) earlier in the week (2–3 days before the long run).
+- Place easy/recovery runs the day after a hard session.
+- Place easy or rest the day before the long run.
+- After the long run: easy or rest (recovery).
+- If {days_per_week} >= 5: a second quality session can go earlier in the week,
+  also buffered from the long run by at least 2 days.
+
+Example for long run on {long_run_day} with {days_per_week} training days:
+  If long run = Friday:  Mon easy, Tue threshold, Wed easy, Thu rest, Fri LONG, Sat easy, Sun rest
+  If long run = Sunday:  Mon rest, Tue threshold, Wed easy, Thu intervals, Fri easy, Sat rest, Sun LONG
+  If long run = Saturday: Mon easy, Tue threshold, Wed easy, Thu easy, Fri rest, Sat LONG, Sun easy/rest
+
+Adapt the pattern — never just copy it exactly — but always honour rules 1–3.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RULES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Long run is ALWAYS on {long_run_day}. This is a hard constraint.

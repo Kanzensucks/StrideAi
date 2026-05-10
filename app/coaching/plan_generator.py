@@ -420,11 +420,13 @@ def _call_session_builder_chunk(
 
     user_message = (
         f"Fill sessions for weeks {first_week}–{last_week} "
-        f"(plan is {total_plan_weeks} weeks total).\n"
-        f"LONG RUN DAY: {long_run_day} — place the long run on {long_run_day} every week.\n"
-        f"Training days per week: {days_per_week} (remaining days = rest).\n"
-        f"Race day of week: {race_day_of_week}, race date: {race_date_str} "
-        f"(race session only in final week week {total_plan_weeks}).\n"
+        f"(plan is {total_plan_weeks} weeks total).\n\n"
+        f"CONSTRAINTS (hard rules — do not break):\n"
+        f"- Long run day: {long_run_day} — long run goes on {long_run_day} every week, no exceptions.\n"
+        f"- Day before {long_run_day} must be easy or rest. Never threshold/intervals/race_pace.\n"
+        f"- Two hard sessions must be separated by at least one easy/rest day.\n"
+        f"- Training days per week: {days_per_week} (fill remaining days with rest).\n"
+        f"- Race session only in week {total_plan_weeks} on {race_day_of_week}. Never earlier.\n\n"
         f"Pace zones:\n{paces_text}\n\n"
         f"Week structure:\n{json.dumps(week_chunk, indent=2)}\n\n"
         f"Return ONLY a valid JSON array of exactly {n} week objects with sessions[].\n"
