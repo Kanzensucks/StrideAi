@@ -4,15 +4,15 @@ Steps (persisted in onboarding_state.json):
   0  → welcome + units
   1  → goal race name + date
   2  → race distance
-  3  → Strava connect (sent immediately, non-blocking — auto-advances to 4)
+  3  → Strava connect (shows link + Continue button — waits for user)
   4  → days/week
   5  → long run day
   6  → experience level
   7  → current weekly mileage + longest recent run
   8  → recent PRs
-  9  → goal prediction (3 options from fitness data)
-  10 → cross-training prefs
-  11 → injury history
+  9  → cross-training prefs
+  10 → injury history
+  11 → goal prediction (3 options, after ALL data collected)
   12 → waiting for Strava (if not already connected) / finalise
 """
 
@@ -109,8 +109,7 @@ STEPS = {
         "field": None,
         "type": "text",
     },
-    # Step 9 = goal prediction (built dynamically)
-    10: {
+    9: {
         "question": (
             "What cross-training do you have access to? (Select all that apply)\n\n"
             "Type the numbers, e.g: 1 3 or just \"none\""
@@ -119,7 +118,7 @@ STEPS = {
         "field": None,
         "type": "text",
     },
-    11: {
+    10: {
         "question": (
             "Any current injuries or niggles I should know about?\n\n"
             "Be honest — I'll build around them. Or just say \"none\"."
@@ -127,9 +126,10 @@ STEPS = {
         "field": "injury_notes",
         "type": "text",
     },
+    # Step 11 = goal prediction (built dynamically, after all data collected)
 }
 
-# Display step numbers for progress indicator (skips auto-advance step 3)
+# Display step numbers for progress indicator (skips step 3 Strava side-step)
 _DISPLAY_STEP = {0: 1, 1: 2, 2: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10, 11: 11}
 TOTAL_STEPS = 11
 
@@ -226,6 +226,12 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
             data["prs"] = _parse_prs(answer)
 
     elif step == 9:
+        data["cross_training_prefs"] = _parse_cross_training(answer)
+
+    elif step == 10:
+        data["injury_notes"] = answer if answer.lower() != "none" else "none reported"
+
+    elif step == 11:
         # Goal prediction — expect "goaltime:3:38:00" callback
         if answer.startswith("goaltime:"):
             data["goal_time"] = answer.split(":", 1)[1]
@@ -233,12 +239,6 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
             # User typed instead of tapping — re-show buttons
             _send_goal_prediction(chat_id, data)
             return True
-
-    elif step == 10:
-        data["cross_training_prefs"] = _parse_cross_training(answer)
-
-    elif step == 11:
-        data["injury_notes"] = answer if answer.lower() != "none" else "none reported"
 
     # Advance step
     step += 1
@@ -250,8 +250,8 @@ def handle_onboarding_message(chat_id: str, text: str, callback_data: str = None
         # Show Strava link with Continue button — stay on step 3 until user taps it
         _send_strava_early(chat_id)
 
-    elif step == 9:
-        # Goal prediction — build from collected data
+    elif step == 11:
+        # All data collected — now show goal prediction
         _send_goal_prediction(chat_id, data)
 
     elif step >= 12:
@@ -280,7 +280,7 @@ def resume_onboarding(chat_id: str) -> None:
 
     if step == 3:
         _send_strava_early(chat_id)
-    elif step == 9:
+    elif step == 11:
         _send_goal_prediction(chat_id, data)
     elif step >= 12:
         oauth_url = f"https://{PUBLIC_DOMAIN}/strava/connect?chat_id={chat_id}"
@@ -347,7 +347,7 @@ def _send_goal_prediction(chat_id: str, data: dict) -> None:
         return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else t
 
     msg = (
-        f"(9/{TOTAL_STEPS}) Based on {rationale}, here's what's realistic for your "
+        f"({TOTAL_STEPS}/{TOTAL_STEPS}) Based on {rationale}, here's what's realistic for your "
         f"{dist_label}:\n\n"
         f"🟢 Conservative  {_fmt(con)}\n"
         f"    Safe bet — high probability of success\n\n"
