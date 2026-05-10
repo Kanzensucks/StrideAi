@@ -395,6 +395,55 @@ def _run_planner_brain(athlete: dict, race: dict, progression: str, today: str) 
     return result
 
 
+_SESSION_CHUNK_SIZE = 5  # weeks per Brain 2 call — keeps each call well under 16K tokens
+
+
+def _call_session_builder_chunk(
+    week_chunk: list,
+    system: str,
+    paces_text: str,
+    race_date_str: str,
+    race_day_of_week: str,
+    total_plan_weeks: int,
+) -> list:
+    """Run one Brain 2 chunk call for a slice of weeks.
+
+    Returns a list of week objects with sessions[].
+    """
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    n = len(week_chunk)
+    first_week = week_chunk[0]["week"]
+    last_week = week_chunk[-1]["week"]
+
+    user_message = (
+        f"Fill in sessions for weeks {first_week}–{last_week} "
+        f"(out of a {total_plan_weeks}-week plan total).\n"
+        f"Race day: {race_day_of_week}, race date: {race_date_str}\n"
+        f"Training pace zones:\n{paces_text}\n\n"
+        f"Week structure:\n{json.dumps(week_chunk, indent=2)}\n\n"
+        f"Return ONLY a valid JSON array of exactly {n} week objects with sessions[].\n"
+        f"No prose. No fences. Start with ["
+    )
+
+    with client.messages.stream(
+        model=MODEL_SONNET,
+        max_tokens=16000,
+        system=system,
+        messages=[{"role": "user", "content": user_message}],
+    ) as stream:
+        raw = stream.get_final_text()
+
+    raw = raw.strip()
+    if not raw.startswith("["):
+        raw = "[" + raw
+    raw = _strip_fences(raw)
+    if not raw.startswith("["):
+        raw = "[" + raw
+
+    return json.loads(raw)
+
+
 def _run_session_builder_brain(
     planner_output: dict,
     athlete: dict,
@@ -408,11 +457,10 @@ def _run_session_builder_brain(
     """Brain 2: Session Builder (Sonnet).
 
     Takes Brain 1's macro phases and fills in individual sessions for every week.
+    Generates in chunks of _SESSION_CHUNK_SIZE weeks to stay under token limits.
     Returns a list of week dicts with sessions[].
     """
     from app.coaching.prompts import SESSION_BUILDER_SYSTEM_PROMPT
-
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     long_run_day = athlete["constraints"]["long_run_day"]
     days_per_week = athlete["constraints"]["days_per_week"]
@@ -432,45 +480,45 @@ def _run_session_builder_brain(
             km = weekly_kms[i] if i < len(weekly_kms) else 0
             week_structure.append({"week": wn, "phase": name, f"target_volume_{units}": km})
 
-    # Sort by week number
     week_structure.sort(key=lambda w: w["week"])
 
-    system = SESSION_BUILDER_SYSTEM_PROMPT.replace("{long_run_day}", long_run_day)\
+    system = SESSION_BUILDER_SYSTEM_PROMPT\
+        .replace("{long_run_day}", long_run_day)\
         .replace("{days_per_week}", str(days_per_week))\
         .replace("{units}", units)\
         .replace("{race_day_of_week}", race_day_of_week)\
         .replace("{cross_training}", cross_training)\
         .replace("{injury_notes}", injury_notes)\
-        .replace("{methodology}", methodology[:3000])  # trim to avoid token bloat
+        .replace("{methodology}", methodology[:2000])  # trim to avoid prompt bloat
 
-    user_message = (
-        f"Fill in sessions for each of the {total_weeks} weeks below.\n"
-        f"Race: {athlete['constraints'].get('long_run_day', '')} — {race_date_str} ({athlete['constraints'].get('units', 'km')})\n"
-        f"Race day of week: {race_day_of_week}\n"
-        f"Training pace zones:\n{paces_text}\n\n"
-        f"Week structure:\n{json.dumps(week_structure, indent=2)}\n\n"
-        f"Return a JSON array of {total_weeks} week objects, each with a sessions[] array.\n["
+    # Split into chunks — each chunk stays well under 16K output tokens
+    chunks = [
+        week_structure[i: i + _SESSION_CHUNK_SIZE]
+        for i in range(0, len(week_structure), _SESSION_CHUNK_SIZE)
+    ]
+
+    logger.info(
+        f"Brain 2 (Session Builder/Sonnet): {total_weeks} weeks "
+        f"in {len(chunks)} chunks of up to {_SESSION_CHUNK_SIZE}..."
     )
 
-    logger.info(f"Brain 2 (Session Builder/Sonnet): building {total_weeks} weeks...")
+    all_weeks = []
+    for idx, chunk in enumerate(chunks):
+        first = chunk[0]["week"]
+        last = chunk[-1]["week"]
+        logger.info(f"  Brain 2 chunk {idx + 1}/{len(chunks)}: weeks {first}–{last}")
+        chunk_weeks = _call_session_builder_chunk(
+            week_chunk=chunk,
+            system=system,
+            paces_text=paces_text,
+            race_date_str=race_date_str,
+            race_day_of_week=race_day_of_week,
+            total_plan_weeks=total_weeks,
+        )
+        all_weeks.extend(chunk_weeks)
 
-    with client.messages.stream(
-        model=MODEL_SONNET,
-        max_tokens=32000,
-        system=system,
-        messages=[{"role": "user", "content": user_message}],
-    ) as stream:
-        raw = stream.get_final_text()
-
-    # The user message ended with "[" so we prepend it
-    raw_full = "[" + raw.strip()
-    raw_full = _strip_fences(raw_full)
-    if not raw_full.startswith("["):
-        raw_full = "[" + raw_full
-
-    weeks = json.loads(raw_full)
-    logger.info(f"Brain 2 (Session Builder): complete — {len(weeks)} weeks")
-    return weeks
+    logger.info(f"Brain 2 (Session Builder): complete — {len(all_weeks)} weeks total")
+    return all_weeks
 
 
 def generate_plan(profile: dict) -> dict:
