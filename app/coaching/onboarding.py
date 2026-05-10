@@ -482,22 +482,51 @@ def _parse_volume_and_longest(text: str, units: str) -> dict | None:
 
 
 def _parse_prs(text: str) -> dict:
-    """Parse PR text like '5k 22:30, 10k 48:00, HM 1:54:50' into a dict."""
+    """Parse PR text into a dict. Handles both colon format and natural language.
+
+    Examples accepted:
+      '5k 22:30, HM 1:54:50'
+      'hm 1 hour 54 mins'
+      '10k 48 mins, half 1h54m'
+      'half marathon 1:54'
+    """
     import re
     prs = {}
+    text_lower = text.lower()
 
-    patterns = [
-        (r"5\s*k[^\d]*(\d+:\d{2}(?::\d{2})?)", "5k"),
-        (r"10\s*k[^\d]*(\d+:\d{2}(?::\d{2})?)", "10k"),
-        (r"(?:hm|half[^\d]*marathon|half)[^\d]*(\d+:\d{2}(?::\d{2})?)", "half_marathon"),
-        (r"(?:fm|full[^\d]*marathon|marathon)[^\d]*(\d+:\d{2}(?::\d{2})?)", "marathon"),
+    def _extract_time(s: str) -> str | None:
+        """Return first parseable time from string s, in h:mm:ss or mm:ss form."""
+        # Colon format: 1:54:50 or 1:54 or 22:30
+        m = re.search(r'\b(\d{1,2}:\d{2}(?::\d{2})?)\b', s)
+        if m:
+            return m.group(1)
+        # Word format: "1 hour 54 min", "1h 54m", "1h54m"
+        m = re.search(
+            r'(\d+)\s*h(?:ours?|r)?\s*(\d+)\s*m(?:ins?|inutes?)?', s
+        )
+        if m:
+            return f"{int(m.group(1))}:{int(m.group(2)):02d}:00"
+        # Minutes only: "54 mins" (for 5k/10k)
+        m = re.search(r'(\d+)\s*m(?:ins?|inutes?)\b', s)
+        if m:
+            total = int(m.group(1))
+            return f"{total // 60}:{total % 60:02d}:00" if total >= 60 else f"{total}:00"
+        return None
+
+    dist_patterns = [
+        (r'\b5\s*k\b', "5k"),
+        (r'\b10\s*k\b', "10k"),
+        (r'\b(?:hm|half(?:\s*marathon)?)\b', "half_marathon"),
+        (r'\b(?:fm|full(?:\s*marathon)?|(?<!\w)marathon)\b', "marathon"),
     ]
 
-    text_lower = text.lower()
-    for pattern, key in patterns:
-        m = re.search(pattern, text_lower)
+    for dist_re, key in dist_patterns:
+        m = re.search(dist_re, text_lower)
         if m:
-            prs[key] = m.group(1)
+            # Look for a time in the ~50 chars after the distance keyword
+            t = _extract_time(text_lower[m.end(): m.end() + 50])
+            if t:
+                prs[key] = t
 
     return prs
 
