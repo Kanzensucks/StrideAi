@@ -247,6 +247,27 @@ CHAT_TOOLS = [
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "update_goal_and_paces",
+        "description": (
+            "Update the athlete's goal time and recalculate all training pace zones. "
+            "Use this when the athlete asks to change their goal, target time, or paces. "
+            "This actually saves the change — use it instead of just describing what the paces would be."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "goal_time": {
+                    "type": "string",
+                    "description": (
+                        "Goal finish time in h:mm:ss format, e.g. '3:40:00'. "
+                        "Convert 'sub 3:40' → '3:40:00', '3h40m' → '3:40:00'."
+                    ),
+                }
+            },
+            "required": ["goal_time"],
+        },
+    },
 ]
 
 
@@ -376,6 +397,27 @@ def _execute_chat_tool(chat_id: str, name: str, inputs: dict) -> str:
             lines = ["Current training paces:"]
             for zone, pace in paces.items():
                 lines.append(f"  {zone.replace('_', ' ').title()}: {pace}")
+            return "\n".join(lines)
+
+        elif name == "update_goal_and_paces":
+            goal_time = str(inputs.get("goal_time", "")).strip()
+            if not goal_time:
+                return "Error: goal_time is required."
+            # Normalise common formats → h:mm:ss
+            import re as _re
+            # "3:40" → "3:40:00"
+            if _re.match(r'^\d:\d{2}$', goal_time) or _re.match(r'^\d{1,2}:\d{2}$', goal_time):
+                goal_time = goal_time + ":00"
+            profile = user_store.get_profile(chat_id)
+            profile["goal_time"] = goal_time
+            paces = plan_generator.calculate_paces(profile)
+            if not paces:
+                return f"Could not calculate paces for {goal_time} — check the format."
+            user_store.update_profile(chat_id, {"goal_time": goal_time, "paces": paces})
+            lines = [f"Goal updated to {goal_time}. New pace zones:"]
+            for zone, pace in paces.items():
+                lines.append(f"  {zone.replace('_', ' ').title()}: {pace}")
+            logger.info(f"[agent] update_goal_and_paces: {goal_time} → paces saved [{chat_id}]")
             return "\n".join(lines)
 
         else:
