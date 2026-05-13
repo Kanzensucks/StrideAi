@@ -759,7 +759,27 @@ def _send_post_plan_goal_options(chat_id: str, profile: dict) -> None:
         parts = t.split(":")
         return f"{parts[0]}:{parts[1]}" if len(parts) >= 2 else t
 
+    # Check if user has a stated goal that differs meaningfully from all 3 predictions
+    stated_goal = profile.get("goal_time", "")
+    stated_s = plan_generator._time_str_to_seconds(stated_goal) if stated_goal else 0
+    prediction_seconds = set()
+    for t in (con, rea, agg):
+        s = plan_generator._time_str_to_seconds(t)
+        if s > 0:
+            prediction_seconds.add(s)
+
+    show_stated = (
+        stated_s > 0
+        and bool(prediction_seconds)
+        and all(abs(stated_s - p) > 3 * 60 for p in prediction_seconds)
+    )
+
     summary_line = f"\n\n_{planner_summary}_" if planner_summary else ""
+    stated_note = (
+        f"\n\n⚡ *Your goal*  {_fmt(stated_goal)}\n"
+        f"    Tougher than data suggests — possible if training holds"
+        if show_stated else ""
+    )
     msg = (
         f"*What's your goal for the {dist_label}?*{summary_line}\n\n"
         f"🟢 *Conservative*  {_fmt(con)}\n"
@@ -767,7 +787,8 @@ def _send_post_plan_goal_options(chat_id: str, profile: dict) -> None:
         f"🎯 *Realistic*  {_fmt(rea)}\n"
         f"    Achievable with consistent training\n\n"
         f"🔥 *Aggressive*  {_fmt(agg)}\n"
-        f"    Possible if everything clicks\n\n"
+        f"    Possible if everything clicks"
+        f"{stated_note}\n\n"
         f"Your plan is built around the Realistic target. "
         f"Tapping a goal locks in your training paces."
     )
@@ -776,6 +797,8 @@ def _send_post_plan_goal_options(chat_id: str, profile: dict) -> None:
         [{"text": f"🎯 Realistic  {_fmt(rea)}", "callback_data": f"goaltime:{rea}"}],
         [{"text": f"🔥 Aggressive  {_fmt(agg)}", "callback_data": f"goaltime:{agg}"}],
     ]
+    if show_stated:
+        keyboard.append([{"text": f"⚡ My goal  {_fmt(stated_goal)}", "callback_data": f"goaltime:{stated_goal}"}])
     telegram_client.send_message_with_keyboard(chat_id, msg, keyboard)
 
 

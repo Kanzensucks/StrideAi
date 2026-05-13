@@ -162,7 +162,8 @@ Rules:
 - If asked about today's session, use get_todays_session.
 - If asked about load, fatigue, missed runs, or trends, use get_recent_runs or get_weekly_load.
 - If asked about paces or zones, use get_training_paces.
-- Simple conversational replies need no tools.{memory_block}"""
+- Simple conversational replies need no tools.
+- To change goal time or paces, you MUST call update_goal_and_paces — never confirm a change in text without calling the tool first.{memory_block}"""
 
 
 def build_chat_system_prompt(profile: dict) -> str:
