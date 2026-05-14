@@ -255,7 +255,7 @@ def calculate_paces(profile: dict) -> dict:
 
     # Multipliers per methodology
     mult = {
-        "marathon": {"easy": 1.20, "threshold": 1.0, "intervals": 0.92},
+        "marathon": {"easy": 1.20, "threshold": 0.95, "intervals": 0.88},
         "half_marathon": {"easy": 1.20, "threshold": 1.05, "intervals": 0.90},
         "10k": {"easy": 1.25, "threshold": 1.10, "intervals": 0.95},
         "5k": {"easy": 1.30, "threshold": 1.15, "intervals": 1.0},
