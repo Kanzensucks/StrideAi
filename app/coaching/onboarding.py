@@ -554,6 +554,9 @@ def _normalise_goal_time(text: str) -> str:
 
     t = re.sub(r"^(sub|under)\s*", "", t)
 
+    # Normalise dot-separator to colon (e.g. "3.40" → "3:40")
+    t = re.sub(r"^(\d+)\.(\d{2})$", r"\1:\2", t)
+
     m = re.match(r"^(\d+):(\d{2}):(\d{2})$", t)
     if m:
         return f"{int(m.group(1))}:{m.group(2)}:{m.group(3)}"
