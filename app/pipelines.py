@@ -543,14 +543,29 @@ _analysed_activities: set = set()
 
 def daily_analysis(chat_id: str, activity_id: int) -> str:
     """Post-run analysis triggered by Strava webhook or scheduler."""
-    key = f"{chat_id}:{activity_id}"
+    activity_id_str = str(activity_id)
+
+    # In-memory dedup (fast path — survives within a single process lifetime)
+    key = f"{chat_id}:{activity_id_str}"
     if key in _analysed_activities:
-        logger.info(f"Pipeline 1: Skipping duplicate daily_analysis {key}")
+        logger.info(f"Pipeline 1: Skipping duplicate daily_analysis {key} (in-memory)")
         return ""
     _analysed_activities.add(key)
-    # Prevent unbounded growth — keep last 500 entries
     if len(_analysed_activities) > 500:
         _analysed_activities.clear()
+
+    # Persistent dedup — survives redeploys (stored in scheduler_state.json)
+    sched_state = user_store.get_scheduler_state(chat_id)
+    analysed_ids: list = sched_state.get("analysed_activity_ids", [])
+    if activity_id_str in analysed_ids:
+        logger.info(f"Pipeline 1: Skipping duplicate daily_analysis {key} (persistent)")
+        return ""
+    # Keep last 50 IDs to cap file size
+    analysed_ids.append(activity_id_str)
+    if len(analysed_ids) > 50:
+        analysed_ids = analysed_ids[-50:]
+    sched_state["analysed_activity_ids"] = analysed_ids
+    user_store.save_scheduler_state(chat_id, sched_state)
 
     logger.info(f"Pipeline 1: Daily analysis [{chat_id}] activity {activity_id}")
 
