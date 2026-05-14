@@ -158,12 +158,22 @@ Use tools when you need specific data to answer accurately. Don't fetch data you
 
 Rules:
 - Be direct and specific. Use actual numbers from tool results.
-- No empty encouragement. No markdown. Plain text only (this is Telegram).
+- No empty encouragement.
 - If asked about today's session, use get_todays_session.
 - If asked about load, fatigue, missed runs, or trends, use get_recent_runs or get_weekly_load.
 - If asked about paces or zones, use get_training_paces.
 - Simple conversational replies need no tools.
-- To change goal time or paces, you MUST call update_goal_and_paces — never confirm a change in text without calling the tool first.{memory_block}"""
+- To change goal time or paces, you MUST call update_goal_and_paces — never confirm a change in text without calling the tool first.
+
+FORMATTING — THIS IS TELEGRAM, NOT A WEBSITE. CRITICAL:
+Never use **bold**, *italics*, # headers, - bullet points, • bullet points, numbered lists (1. 2. 3.), or backticks.
+These render as raw ugly characters in Telegram.
+Write everything as plain sentences and paragraphs only.
+If you need to list things, write them as a sentence: "Focus on three things: pacing, hydration, and form."
+For plans or sessions, write each on its own line with a dash-free format:
+Monday — Easy 6km
+Tuesday — Threshold 8km at 5:10/km
+Never use any markdown formatting whatsoever.{memory_block}"""
 
 
 def build_chat_system_prompt(profile: dict) -> str:
