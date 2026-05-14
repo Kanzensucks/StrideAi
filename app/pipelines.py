@@ -802,7 +802,7 @@ def _send_post_plan_goal_options(chat_id: str, profile: dict) -> None:
     telegram_client.send_message_with_keyboard(chat_id, msg, keyboard)
 
 
-def generate_and_send_plan(chat_id: str) -> None:
+def generate_and_send_plan(chat_id: str, stated_goal: str = None) -> None:
     """Generate full plan and send welcome summary to user."""
     logger.info(f"Pipeline 4: Generating plan [{chat_id}]")
 
@@ -825,6 +825,9 @@ def generate_and_send_plan(chat_id: str) -> None:
                 telegram_client.send_message(chat_id, "Strava connected — no recent activities found yet, but your plan is on its way.")
         except Exception:
             pass
+
+        # Capture stated goal before plan generation overwrites it
+        stated_goal = profile.get("goal_time", "")
 
         # Inject chat_id so generate_plan() can fetch Strava history
         profile["_chat_id"] = chat_id
@@ -867,8 +870,18 @@ def generate_and_send_plan(chat_id: str) -> None:
         )
         telegram_client.send_message(chat_id, message)
 
-        # Show goal prediction buttons so user can confirm/adjust their target
-        _send_post_plan_goal_options(chat_id, profile)
+        if stated_goal:
+            # /setrace flow — user already declared their goal, lock it in directly
+            paces = plan_generator.calculate_paces({**profile, "goal_time": stated_goal})
+            if paces:
+                user_store.update_profile(chat_id, {"goal_time": stated_goal, "paces": paces})
+            telegram_client.send_message(
+                chat_id,
+                f"Goal set: {stated_goal}. Training paces updated — type /pace to see your zones.\n\nLet's get to work."
+            )
+        else:
+            # Onboarding flow — no stated goal, show Brain 1 predictions as buttons
+            _send_post_plan_goal_options(chat_id, profile)
 
     except Exception as e:
         logger.error(f"Plan generation failed for {chat_id}: {e}", exc_info=True)

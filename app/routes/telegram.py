@@ -370,6 +370,7 @@ def _handle_setrace_step(chat_id: str, text: str, is_callback: bool = False) -> 
         threading.Thread(
             target=pipelines.generate_and_send_plan,
             args=(chat_id,),
+            kwargs={"stated_goal": data["goal_time"]},
             daemon=True,
         ).start()
 
