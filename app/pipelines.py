@@ -826,9 +826,6 @@ def generate_and_send_plan(chat_id: str, stated_goal: str = None) -> None:
         except Exception:
             pass
 
-        # Capture stated goal before plan generation overwrites it
-        stated_goal = profile.get("goal_time", "")
-
         # Inject chat_id so generate_plan() can fetch Strava history
         profile["_chat_id"] = chat_id
         plan = plan_generator.generate_plan(profile)
