@@ -539,8 +539,19 @@ def handle_chat(chat_id: str, athlete_message: str, msg_timestamp=None) -> None:
 # PIPELINE 1: DAILY ANALYSIS
 # ─────────────────────────────────────────────────────────────
 
+_analysed_activities: set = set()
+
 def daily_analysis(chat_id: str, activity_id: int) -> str:
-    """Post-run analysis triggered by Strava webhook."""
+    """Post-run analysis triggered by Strava webhook or scheduler."""
+    key = f"{chat_id}:{activity_id}"
+    if key in _analysed_activities:
+        logger.info(f"Pipeline 1: Skipping duplicate daily_analysis {key}")
+        return ""
+    _analysed_activities.add(key)
+    # Prevent unbounded growth — keep last 500 entries
+    if len(_analysed_activities) > 500:
+        _analysed_activities.clear()
+
     logger.info(f"Pipeline 1: Daily analysis [{chat_id}] activity {activity_id}")
 
     time.sleep(25)
