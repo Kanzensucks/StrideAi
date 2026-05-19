@@ -226,8 +226,9 @@ CHAT_TOOLS = [
     {
         "name": "get_weekly_load",
         "description": (
-            "Get week-by-week training volume (km) for the last N weeks. "
-            "Use this to identify trends, overtraining, or undertraining."
+            "Get week-by-week training summary for the last N weeks — includes run km, "
+            "bike hours, and other cross-training. Use this for any progress, trend, "
+            "volume, or training history questions."
         ),
         "input_schema": {
             "type": "object",
@@ -358,31 +359,40 @@ def _execute_chat_tool(chat_id: str, name: str, inputs: dict) -> str:
                 return f"No Strava activities found in the last {weeks} weeks."
             profile = user_store.get_profile(chat_id)
             units = profile.get("units", "km")
-            # Group by ISO week
             from collections import defaultdict
-            week_buckets: dict = defaultdict(float)
-            week_counts: dict = defaultdict(int)
+            from datetime import datetime as _dt
+            # Per-week buckets: run_km, run_count, bike_h, other_h
+            week_data: dict = defaultdict(lambda: {"run_km": 0.0, "runs": 0, "bike_h": 0.0, "other_h": 0.0})
             for a in activities:
-                if "run" not in (a.get("sport_type") or a.get("type") or "").lower():
-                    continue
+                sport = (a.get("sport_type") or a.get("type") or "").lower()
                 try:
-                    from datetime import datetime as _dt
                     d = _dt.strptime(a["start_date_local"][:10], "%Y-%m-%d")
                     wk = d.strftime("%Y-W%W")
-                    label = d.strftime("Wk %b %-d")
+                    wk_label = d.strftime("%b %-d")
                 except Exception:
                     continue
-                dist_km = (a.get("distance") or 0) / 1000
-                week_buckets[wk] += dist_km
-                week_counts[wk] += 1
-            if not week_buckets:
-                return "No run data found."
-            lines = [f"Weekly run volume (last {weeks} weeks):"]
-            for wk in sorted(week_buckets.keys()):
-                km = week_buckets[wk]
-                cnt = week_counts[wk]
-                display = round(km * 0.621371, 1) if units == "mi" else round(km, 1)
-                lines.append(f"  {wk}: {display}{units} ({cnt} run{'s' if cnt != 1 else ''})")
+                hours = (a.get("moving_time") or 0) / 3600
+                if "run" in sport:
+                    week_data[wk]["run_km"] += (a.get("distance") or 0) / 1000
+                    week_data[wk]["runs"] += 1
+                    week_data[wk]["label"] = wk_label
+                elif any(k in sport for k in ["ride", "bike", "cycl"]):
+                    week_data[wk]["bike_h"] += hours
+                    week_data[wk].setdefault("label", wk_label)
+                else:
+                    week_data[wk]["other_h"] += hours
+                    week_data[wk].setdefault("label", wk_label)
+            if not week_data:
+                return "No training data found."
+            lines = [f"Weekly training load (last {weeks} weeks):"]
+            for wk in sorted(week_data.keys()):
+                b = week_data[wk]
+                run_km = b["run_km"]
+                display = round(run_km * 0.621371, 1) if units == "mi" else round(run_km, 1)
+                run_str = f"{display}{units} run ({b['runs']} session{'s' if b['runs'] != 1 else ''})" if b["runs"] else "0km run"
+                bike_str = f" + {b['bike_h']:.1f}h bike" if b["bike_h"] > 0 else ""
+                other_str = f" + {b['other_h']:.1f}h other" if b["other_h"] > 0 else ""
+                lines.append(f"  {wk}: {run_str}{bike_str}{other_str}")
             return "\n".join(lines)
 
         elif name == "get_training_paces":
