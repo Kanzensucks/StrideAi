@@ -129,6 +129,13 @@ def apply_button_action(chat_id: str, day: str, week_number: int, action: str) -
             return "No other days available to swap with this week."
         return f"SWAP_PICK:{day}:{week_number}:{','.join(other_days)}"
 
+    elif action in ("easier", "harder"):
+        return _soften_or_harden_session(
+            chat_id, session, sessions, target_idx, week_number, action, profile
+        )
+
+    return "Action not recognised."
+
 
 def apply_swap(chat_id: str, from_day: str, to_day: str, week_number: int) -> str:
     """Swap two sessions by day name within a week."""
@@ -143,13 +150,6 @@ def apply_swap(chat_id: str, from_day: str, to_day: str, week_number: int) -> st
     sessions[from_idx], sessions[to_idx] = sessions[to_idx], sessions[from_idx]
     user_store.update_week_sessions(chat_id, week_number, sessions)
     return f"Done. {from_day}'s session swapped with {to_day}."
-
-    elif action in ("easier", "harder"):
-        return _soften_or_harden_session(
-            chat_id, session, sessions, target_idx, week_number, action, profile
-        )
-
-    return "Action not recognised."
 
 
 def _soften_or_harden_session(
