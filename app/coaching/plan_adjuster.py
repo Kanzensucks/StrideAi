@@ -119,18 +119,30 @@ def apply_button_action(chat_id: str, day: str, week_number: int, action: str) -
         return f"{day}'s session marked as rest. Rest well."
 
     elif action == "swap":
-        # Find the next rest day and swap
-        rest_idx = next(
-            (i for i, s in enumerate(sessions)
-             if s.get("type") == "rest" and i != target_idx),
-            None
-        )
-        if rest_idx is not None:
-            sessions[target_idx], sessions[rest_idx] = sessions[rest_idx], sessions[target_idx]
-            user_store.update_week_sessions(chat_id, week_number, sessions)
-            new_day = sessions[target_idx].get("day", "another day")
-            return f"Swapped. Session moved to {new_day}."
-        return "No rest day available to swap with this week."
+        # Return the list of other days so the caller can show a picker
+        # Format: "SWAP_PICK:<original_day>:<week_number>:<day1>,<day2>,..."
+        other_days = [
+            s.get("day") for i, s in enumerate(sessions)
+            if i != target_idx and s.get("day")
+        ]
+        if not other_days:
+            return "No other days available to swap with this week."
+        return f"SWAP_PICK:{day}:{week_number}:{','.join(other_days)}"
+
+
+def apply_swap(chat_id: str, from_day: str, to_day: str, week_number: int) -> str:
+    """Swap two sessions by day name within a week."""
+    week = user_store.get_week_plan(chat_id, week_number)
+    if not week:
+        return "Couldn't find that week in your plan."
+    sessions = list(week.get("sessions", []))
+    from_idx = next((i for i, s in enumerate(sessions) if s.get("day", "").startswith(from_day)), None)
+    to_idx = next((i for i, s in enumerate(sessions) if s.get("day", "").startswith(to_day)), None)
+    if from_idx is None or to_idx is None:
+        return "Couldn't find both days in your plan."
+    sessions[from_idx], sessions[to_idx] = sessions[to_idx], sessions[from_idx]
+    user_store.update_week_sessions(chat_id, week_number, sessions)
+    return f"Done. {from_day}'s session swapped with {to_day}."
 
     elif action in ("easier", "harder"):
         return _soften_or_harden_session(

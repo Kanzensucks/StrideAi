@@ -90,8 +90,33 @@ def _handle_callback(callback: dict) -> None:
             except ValueError:
                 week_number = 1
             msg = plan_adjuster.apply_button_action(chat_id, day, week_number, action)
-            if msg:
+            if msg and msg.startswith("SWAP_PICK:"):
+                # Show a day picker — "SWAP_PICK:<from_day>:<week>:<day1>,<day2>,..."
+                _, from_day, wk, days_csv = msg.split(":", 3)
+                other_days = days_csv.split(",")
+                keyboard = [
+                    [{"text": d, "callback_data": f"swap_confirm:{from_day}:{wk}:{d}"}]
+                    for d in other_days
+                ]
+                telegram_client.send_message_with_keyboard(
+                    chat_id,
+                    f"Move {from_day}'s session to which day?",
+                    keyboard,
+                )
+            elif msg:
                 telegram_client.send_message(chat_id, msg)
+
+    if data.startswith("swap_confirm:"):
+        # "swap_confirm:<from_day>:<week_number>:<to_day>"
+        parts = data.split(":")
+        if len(parts) == 4:
+            _, from_day, week_str, to_day = parts
+            try:
+                week_number = int(week_str)
+            except ValueError:
+                week_number = 1
+            msg = plan_adjuster.apply_swap(chat_id, from_day, to_day, week_number)
+            telegram_client.send_message(chat_id, msg)
 
     # (forgetme handled above before onboarding check)
 

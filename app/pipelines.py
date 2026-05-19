@@ -206,10 +206,11 @@ CHAT_TOOLS = [
         },
     },
     {
-        "name": "get_recent_runs",
+        "name": "get_recent_activities",
         "description": (
-            "Get the athlete's recent Strava runs. Use this to check training load, "
-            "missed sessions, actual paces, or recovery status."
+            "Get the athlete's recent Strava activities — runs, bike rides, gym sessions, "
+            "cross-training, everything. Use this to check training load, missed sessions, "
+            "actual paces, cycling hours, or recovery status."
         ),
         "input_schema": {
             "type": "object",
@@ -330,7 +331,7 @@ def _execute_chat_tool(chat_id: str, name: str, inputs: dict) -> str:
                 )
             return "\n".join(lines)
 
-        elif name == "get_recent_runs":
+        elif name in ("get_recent_activities", "get_recent_runs"):
             days = int(inputs.get("days", 14))
             days = min(days, 28)
             after = datetime.now() - timedelta(days=days)
@@ -338,17 +339,12 @@ def _execute_chat_tool(chat_id: str, name: str, inputs: dict) -> str:
                 chat_id, after_epoch=after.timestamp(), per_page=50, max_pages=1
             )
             if not activities:
-                return f"No Strava runs found in the last {days} days."
+                return f"No Strava activities found in the last {days} days."
             profile = user_store.get_profile(chat_id)
             units = profile.get("units", "km")
-            runs = [
-                a for a in activities
-                if "run" in (a.get("sport_type") or a.get("type") or "").lower()
-            ]
-            if not runs:
-                return f"No runs logged in the last {days} days."
-            lines = [f"Last {days} days — {len(runs)} run(s):"]
-            for a in sorted(runs, key=lambda x: x["start_date_local"])[-10:]:
+            sorted_acts = sorted(activities, key=lambda x: x["start_date_local"])[-15:]
+            lines = [f"Last {days} days — {len(activities)} activity/activities:"]
+            for a in sorted_acts:
                 lines.append(strava_client.format_activity_line(a, units))
             return "\n".join(lines)
 
